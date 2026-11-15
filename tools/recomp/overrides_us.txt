@@ -1,0 +1,4 @@
+# Native replacements for SCUS_944.48 (USA) library functions (see overrides_jp.txt)
+800355b4  hle_vsync_wait  8006b4a8 8003564c 8003565c   # counter, ChangeClearPad, ChangeClearRCnt
+800260b0  hook_caption_clock   # analysis
+800260f4  hook_caption_clock   # analysis

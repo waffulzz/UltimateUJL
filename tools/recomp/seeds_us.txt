@@ -1,0 +1,2 @@
+# Extra function entry points for SCUS_944.48 (USA) -- analysis/tracing build only
+80035868   # libetc startIntr: setjmp return site (BIOS custom exit resumes here)

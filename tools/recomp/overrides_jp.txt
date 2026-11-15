@@ -1,0 +1,16 @@
+# Native replacements for SCPS_180.11 (JP) library functions.
+# addr  runtime_function  [hex args...]
+# libetc VSync wait loop: waits for the vblank counter with an iteration-count timeout that
+# expires instantly on a fast host (game ran uncapped).
+8003562c  hle_vsync_wait  8006aad8 800356c4 800356d4   # counter, ChangeClearPad, ChangeClearRCnt
+# English captions: supply the English line (already in the JP overlays) to the sheet-path renderer.
+8001e42c  hook_default_language   # boot settings init stored language=Japanese; default to English
+# Guitar feedback stream: libspu SpuSetTransferStartAddr, honouring the game's runtime nop of its range
+# check so the voice 1/3 capture buffers can be read (src/runtime/fbstream.c).
+8004e554  hle_spu_set_transfer_addr
+# Debug: UJL_FORCE_RATING pins the rating (src/runtime/unlock.c).
+80019580  hook_force_rating
+# Debug: UJL_FORCE_SCENE=n turns a Stage 1 story start into scene n (8 = staff roll) (src/runtime/unlock.c).
+80013e8c  hook_force_scene
+# English tooltip bar: point Stage Select tooltip sprites at the US word sheet (src/runtime/patch.c).
+801cbc4c@COMOD0.MEN  hook_tooltip_sprite

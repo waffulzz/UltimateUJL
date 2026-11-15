@@ -1,0 +1,167 @@
+/* English captions for the JP build.
+
+   The JP overlays already carry the final English caption timelines (byte-identical to the USA
+   release). The JP game plays a parallel timeline with the *same* {start, duration} records whose
+   payloads point at descriptors of its pre-rendered Japanese caption sheet, and hands that
+   descriptor to the shared caption renderer. Both timelines live in the same overlay.
+
+   Timeline record layout: { u32 start (30 Hz ticks), u32 payload ptr, u32 duration }.
+
+   This hook (on the shared renderer) maps "Japanese descriptor of record i" to "English line i" of
+   the timeline with identical timing, so the game's own renderer draws the English text with the
+   game's own font and the game's own timing. No text is ever logged. */
+#include "psx.h"
+
+#include <stdlib.h>
+int g_english_captions = 1;
+
+extern int rt_current_overlay(uint32_t *base, uint32_t *size);
+
+#define MAX_TL 1024
+typedef struct { uint32_t base; int n; int is_text; int start_only; } Timeline;
+static Timeline tls[MAX_TL];
+static int ntl;
+static int pair_of[MAX_TL]; /* JP timeline -> index of the English timeline with the same timing */
+static uint32_t cached_base, cached_size;
+
+static int is_text(uint32_t p, uint32_t lo, uint32_t hi) {
+    if (p < lo || p >= hi) return 0;
+    int n = 0;
+    for (; n < 200; n++) {
+        uint32_t b = mem_r8(p + (uint32_t)n);
+        if (!b) break;
+        if (!((b >= 0x20 && b < 0x7F) || b == '\n')) return 0;
+    }
+    return n >= 2 && n < 200;
+}
+
+static void scan_overlay(uint32_t ob, uint32_t os) {
+    uint32_t lo = ob, hi = ob + os;
+    ntl = 0;
+    for (uint32_t a = ob; a + 48 < hi && ntl < MAX_TL; a += 4) {
+        /* two homogeneous kinds: timed records (duration > 0, cutscene captions) and start-only
+           records (third field 0, song lyrics) */
+        int n = 0, text = 0;
+        uint32_t prev = 0;
+        int start_only = mem_r32(a + 8) == 0;
+        int first_text = is_text(mem_r32(a + 4), lo, hi);
+        while (a + (uint32_t)n * 12 + 12 <= hi) {
+            uint32_t st = mem_r32(a + (uint32_t)n * 12), p = mem_r32(a + (uint32_t)n * 12 + 4),
+                     du = mem_r32(a + (uint32_t)n * 12 + 8);
+            if (p < lo || p >= hi || st < prev || st > 200000) break;
+            if (start_only ? du != 0 : (du == 0 || du > 4000)) break;
+            int t = is_text(p, lo, hi);
+            if (t != first_text) break; /* keep chains homogeneous: all English or all descriptors */
+            if (t) text++;
+            prev = st;
+            n++;
+        }
+        if (n >= 3 && (!start_only || prev > 0)) {
+            tls[ntl].base = a;
+            tls[ntl].n = n;
+            tls[ntl].is_text = (text == n);
+            tls[ntl].start_only = start_only;
+            ntl++;
+            a += (uint32_t)n * 12 - 4;
+        }
+    }
+    /* pair each Japanese (non-text) timeline with an English text timeline:
+       timed kind: identical {start, duration} sequence; start-only kind: most shared start values */
+    int pairs = 0;
+    for (int i = 0; i < ntl; i++) {
+        pair_of[i] = -1;
+        if (tls[i].is_text) continue;
+        int best = -1, best_common = 0;
+        for (int j = 0; j < ntl; j++) {
+            if (!tls[j].is_text || tls[j].start_only != tls[i].start_only) continue;
+            if (!tls[i].start_only) {
+                if (tls[j].n != tls[i].n) continue;
+                int same = 1;
+                for (int k = 0; k < tls[i].n && same; k++)
+                    same = mem_r32(tls[i].base + (uint32_t)k * 12) == mem_r32(tls[j].base + (uint32_t)k * 12) &&
+                           mem_r32(tls[i].base + (uint32_t)k * 12 + 8) == mem_r32(tls[j].base + (uint32_t)k * 12 + 8);
+                if (same) { best = j; break; }
+            } else {
+                int common = 0;
+                for (int k = 0; k < tls[j].n; k++) {
+                    uint32_t s = mem_r32(tls[j].base + (uint32_t)k * 12);
+                    for (int m = 0; m < tls[i].n; m++)
+                        if (mem_r32(tls[i].base + (uint32_t)m * 12) == s) { common++; break; }
+                }
+                if (common > best_common && common * 4 >= tls[j].n * 3) { best = j; best_common = common; }
+            }
+        }
+        if (best >= 0) { pair_of[i] = best; pairs++; }
+    }
+    LOGI("captions: overlay %08x: %d timelines, %d Japanese->English pairs", ob, ntl, pairs);
+}
+
+int g_cap_calls, g_cap_subs;
+static uint32_t g_cap_unmatched[8]; static int g_cap_nun;
+uint32_t g_cap_t;
+
+/* Hook on the JP sheet-path caption renderer (F_8002623c); a0 = payload pointer.
+   The sheet path decodes 2-byte Japanese text, so when an English line is due we draw it with the
+   direct glyph renderer (`direct_fn`, JP F_800261f8, which is what the same caller uses outside
+   "mode 5", as the USA intro does) and give the sheet renderer NULL so it draws nothing. */
+void hook_jp_caption(CPU *c, uint32_t fn, uint32_t direct_fn) {
+    (void)fn;
+    g_cap_calls++;
+    uint32_t p = c->r[4];
+    if (!p || !g_english_captions || getenv("UJL_JP_CAPTIONS")) return;
+    uint32_t ob, os;
+    if (!rt_current_overlay(&ob, &os)) return;
+    if (ob != cached_base || os != cached_size) {
+        cached_base = ob;
+        cached_size = os;
+        scan_overlay(ob, os);
+    }
+    {   /* debug: describe unmatched payloads once each (addresses/counts only) */
+        int found = -1, rec = -1;
+        for (int i = 0; i < ntl && found < 0; i++)
+            for (int k = 0; k < tls[i].n; k++)
+                if (mem_r32(tls[i].base + (uint32_t)k * 12 + 4) == p) { found = i; rec = k; break; }
+        if (found >= 0 && pair_of[found] < 0) {
+            int seen = 0;
+            for (int q = 0; q < g_cap_nun; q++) if (g_cap_unmatched[q] == tls[found].base) seen = 1;
+            if (!seen && g_cap_nun < 8) {
+                g_cap_unmatched[g_cap_nun++] = tls[found].base;
+                LOGV("captions: unpaired timeline @%08x n=%d text=%d (rec %d) first start %u last start %u",
+                     tls[found].base, tls[found].n, tls[found].is_text, rec, mem_r32(tls[found].base),
+                     mem_r32(tls[found].base + (uint32_t)(tls[found].n - 1) * 12));
+                for (int j = 0; j < ntl; j++)
+                    if (tls[j].is_text)
+                        LOGV("captions:    english timeline @%08x n=%d first %u last %u", tls[j].base, tls[j].n,
+                             mem_r32(tls[j].base), mem_r32(tls[j].base + (uint32_t)(tls[j].n - 1) * 12));
+            }
+        } else if (found < 0) {
+            static int nf; if (nf++ < 3) LOGV("captions: payload %08x not in any timeline", p);
+        }
+    }
+    for (int i = 0; i < ntl; i++) {
+        if (pair_of[i] < 0) continue;
+        for (int k = 0; k < tls[i].n; k++) {
+            if (mem_r32(tls[i].base + (uint32_t)k * 12 + 4) != p) continue;
+            const Timeline *en = &tls[pair_of[i]];
+            uint32_t line = 0;
+            if (!tls[i].start_only) line = mem_r32(en->base + (uint32_t)k * 12 + 4);
+            else {
+                uint32_t s0 = mem_r32(tls[i].base + (uint32_t)k * 12);
+                for (int m = 0; m < en->n; m++)
+                    if (mem_r32(en->base + (uint32_t)m * 12) == s0) { line = mem_r32(en->base + (uint32_t)m * 12 + 4); break; }
+            }
+            g_cap_subs++;
+            if (line) {
+                uint32_t regs[32], hi = c->hi, lo = c->lo;
+                memcpy(regs, c->r, sizeof regs);
+                c->r[4] = line;
+                c->r[31] = 0;
+                call_indirect(c, direct_fn);
+                memcpy(c->r, regs, sizeof regs);
+                c->hi = hi; c->lo = lo;
+            }
+            c->r[4] = 0; /* sheet renderer: nothing (also hides JP-only lines with no English match) */
+            return;
+        }
+    }
+}

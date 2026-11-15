@@ -1,0 +1,2 @@
+# Extra function entry points for SCPS_180.11 (JP)
+800358e0   # libetc startIntr: setjmp return site; BIOS custom-exit-from-exception resumes here (v0=1)

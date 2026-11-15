@@ -1,0 +1,32 @@
+# Disc images, archives and anything read from them: never commit (see AGENTS.md)
+*.bin
+*.cue
+*.img
+*.ccd
+*.sub
+*.iso
+*.chd
+*.7z
+*.zip
+*.mcd
+/extracted/
+/readme.html
+
+# Build output, probe shots, logs
+/build/
+*.exe
+*.log
+
+# Game imagery and reference screenshots
+/screenshots/
+/*.png
+/*.jpg
+/*.jpeg
+
+# Local settings
+ujl.ini
+ujl_imgui.ini
+
+# Python
+__pycache__/
+*.pyc
