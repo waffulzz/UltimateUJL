@@ -68,7 +68,8 @@ There's no unit test suite. Verification means running the game headless or scri
   - `PROBE_STACK_AT`, `PROBE_COPY`, `PROBE_FREEZE`, `PROBE_POKE`, `PROBE_VRAMDUMP_AT`, `PROBE_CARD=file.mcd`.
 
   Copy the probe to `ujl_probe_run.exe` before long runs so rebuilds aren't blocked.
-- **Frontend scripts** (the real hardware renderer): `UJL_SCRIPT=file`, with lines `<sec> <button>|shot|burst N|quit`.
+- **Frontend scripts** (the real hardware renderer): `UJL_SCRIPT=file`, with lines
+  `<sec> <button>|shot|burst N|overlay|quit` (`overlay` toggles the F1 settings window).
   Shots go to `build/cmake/shots/hw_vNNNNN.bmp`. Related variables: `UJL_SCRIPT_ASPECT` (0 4:3 … 3 21:9, 5 auto),
   `UJL_SCRIPT_UNLOCK=1`, `UJL_SCRIPT_CARD`, `UJL_SCRIPT_HIDDEN=WxH`. Confirm-with-Cross is on by default, so menus take
   `cross`.

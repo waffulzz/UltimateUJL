@@ -348,16 +348,14 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   ImGui. The first screen (before any disc) is drawn procedurally in that style. Once the JP disc is imported,
   later steps use the real menu art read from it at runtime (never shipped). Also reachable from settings
   ("Manage discs").
-- **JP disc alone must be enough to play.** Only the NTSC-J (SCPS_180.11) image is required. Features that use
-  USA-only assets (English title logo, any later USA re-localization) turn on when a USA disc is also found and
-  are simply skipped without it. English captions already come from the JP disc itself. Current gap: with no
-  USA disc the patch layer still blanks the JP title lettering, so the title shows only the emblem. Without a
-  USA disc it should leave the JP logo (and flames) untouched. Also: never require the USA disc in boot or the
-  file picker, and show which optional discs were found in the settings overlay.
+- **JP disc alone is enough to play (done)**. Only the NTSC-J (SCPS_180.11) image is required; boot and the file
+  picker only ask for it. Every USA-disc feature (English logo, menu TIMs, tooltip words, memory card text, credits
+  song) checks aux_disc_ready() and is skipped without it, and the JP title lettering is only blanked when the
+  English logo is available. Settings > Discs shows which discs were found; "Choose..." stores a USA image as
+  ujl.ini usa_disc (checked before the auto-search, used from the next start).
 - High-res/widescreen/ultrawide GL renderer (FMV stays 4:3 native); texture modes (vectorized HQ / original).
 - Autoplay + Auto-COOL, both watermarking gameplay.
 - Uncensor toggle (JP S6/S7 differences), Stage 1 versus/PaRappa restoration, UJL NOW! Joe Chin cutscenes.
-- Check other ○/✕ prompts (results, save/load, menus' button hints) for the Confirm-with-Cross icon swap.
 - A real pause screen, separate from the "AGAIN?" prompt (the JP game reuses AGAIN? when Start is pressed
   mid-song): resume / retry / quit / settings, drawn by the port.
 - Setting: play the UJL NOW! arcade attract movies (arcade CD MOVIE/*.IKI) in the attract loop (needs the
@@ -365,7 +363,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
 - Uncapped framerate: the game logic stays at its native tick. Rendering above 60 fps needs interpolation
   between consecutive frames' primitive lists (match prims frame to frame, lerp vertices), with a fallback
   to plain 60 when matching fails. Research item: may not be clean for every scene.
-- SPU reverb/noise, memory card saves, Stage 8 captions check.
+- SPU noise (reverb and memory card saves are done; Stage 8 has no captions).
 - **Score comparison vs personal best (user request 2026-11-15)**: next to the score counter, show how the current
   run compares to the best run at the same point in the song: ahead (improving), on track, or behind
   (underperforming), e.g. a +/- delta coloured green/yellow/red. Needs: read the live score from RAM (player struct

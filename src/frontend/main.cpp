@@ -52,14 +52,16 @@ static std::atomic<int> g_vblanks{0};
 static bool g_show_vram;
 
 // ---------------------------------------------------------------- dev automation (UJL_SCRIPT)
-// UJL_SCRIPT=file with lines "<seconds> <button>|shot|quit" drives the game for renderer tests: buttons are
+// UJL_SCRIPT=file with lines "<seconds> <button>|shot|overlay|quit" drives the game for renderer tests: buttons are
 // held for 6 vblanks, "shot" saves the presented window to shots/hw_vNNNNN.bmp (vblank number) next to the exe. While a script
 // runs, UJL_SCRIPT_CARD picks the memory card file (default script_card.mcd, never the player's card),
-// UJL_SCRIPT_ASPECT the aspect index (not saved) and UJL_SCRIPT_UNLOCK=1 unlocks all stages.
-struct ScriptEv { int vblank; int kind; uint16_t bit; }; // kind 0 button, 1 shot, 2 quit
+// UJL_SCRIPT_ASPECT the aspect index (not saved) and UJL_SCRIPT_UNLOCK=1 unlocks all stages. "overlay" toggles the
+// settings window (F1).
+struct ScriptEv { int vblank; int kind; uint16_t bit; }; // kind 0 button, 1 shot, 2 quit, 3 settings overlay
 static std::vector<ScriptEv> g_script;
 static std::atomic<int> g_shot_req{-1};
 static std::atomic<bool> g_script_quit{false};
+static std::atomic<int> g_script_overlay{0};   // pending settings-overlay toggles
 static uint16_t script_btn(const char *n) {
     static const char *names[] = {"select","l3","r3","start","up","right","down","left","l2","r2","l1","r1","triangle","circle","cross","square"};
     for (int i = 0; i < 16; i++) if (!strcmp(n, names[i])) return (uint16_t)(1u << i);
@@ -78,6 +80,7 @@ static bool script_load(const char *path) {
             else if (!strcmp(name, "burst") && sscanf(line, "%*f %*s %d", &n) == 1) /* a shot every vblank for n vblanks */
                 for (int i = 0; i < n; i++) g_script.push_back({vb + i, 1, 0});
             else if (!strcmp(name, "quit")) g_script.push_back({vb, 2, 0});
+            else if (!strcmp(name, "overlay")) g_script.push_back({vb, 3, 0});
             else if (uint16_t b = script_btn(name)) g_script.push_back({vb, 0, b});
         }
     fclose(f);
@@ -90,6 +93,7 @@ static uint16_t script_vblank(int vb) {
         if (e.kind == 0 && vb >= e.vblank && vb < e.vblank + 6) held |= e.bit;
         else if (e.kind == 1 && vb == e.vblank) g_shot_req = vb;
         else if (e.kind == 2 && vb == e.vblank) g_script_quit = true;
+        else if (e.kind == 3 && vb == e.vblank) g_script_overlay++;
     }
     return held;
 }
@@ -181,6 +185,14 @@ static std::string g_card_pick_path;
 static int g_card_import_mode = 0;            // 0 copy this game's saves, 1 replace the whole card
 static void SDLCALL card_pick_cb(void *, const char *const *files, int) {
     if (files && files[0]) { g_card_pick_path = files[0]; g_card_pick = 1; }
+}
+
+// ---------------------------------------------------------------- discs (settings "Discs" section)
+static std::string g_jp_disc_path, g_usa_disc_path;   // what this session booted / opened ("" = none)
+static std::atomic<int> g_usa_pick{0};                 // 1 = a file was picked in the USA disc dialog
+static std::string g_usa_pick_path, g_usa_pick_msg;
+static void SDLCALL usa_pick_cb(void *, const char *const *files, int) {
+    if (files && files[0]) { g_usa_pick_path = files[0]; g_usa_pick = 1; }
 }
 
 // ---------------------------------------------------------------- input
@@ -332,6 +344,9 @@ static std::string search_disc() {
 
 // USA disc (asset source for the English title logo), found the same way as the JP disc
 static std::string search_usa_disc(const std::string &jp_disc) {
+    std::string remembered = ini_get("usa_disc");   // picked in settings
+    if (!remembered.empty() && file_exists(remembered) && disc_image_boots(remembered.c_str(), "SCUS_944.48"))
+        return remembered;
     std::string dir = jp_disc.substr(0, jp_disc.find_last_of("/\\") + 1);
     std::vector<std::string> dirs = {dir, g_base_dir};
     for (int up = 0; up < 4; up++) {
@@ -485,11 +500,12 @@ int main(int argc, char **argv) {
         if (cwd) { disc = std::string(cwd) + disc; SDL_free(cwd); }
     }
     ini_set_disc(disc);
+    g_jp_disc_path = disc;
     fprintf(stderr, "disc: %s\n", disc.c_str());
-    {   /* the USA disc (if present) supplies the English title logo */
+    {   /* the USA disc (if present) supplies the English title logo, menu text and credits song */
         std::string usa = search_usa_disc(disc);
-        if (!usa.empty() && aux_disc_open(usa.c_str())) fprintf(stderr, "usa disc: %s\n", usa.c_str());
-        else fprintf(stderr, "usa disc: not found (title keeps the shared emblem)\n");
+        if (!usa.empty() && aux_disc_open(usa.c_str())) { g_usa_disc_path = usa; fprintf(stderr, "usa disc: %s\n", usa.c_str()); }
+        else fprintf(stderr, "usa disc: not found (Japanese title logo and menus)\n");
     }
     {   /* memory card slot 1: a standard raw PS1 card image next to the exe (created blank if missing) */
         const char *sc = getenv("UJL_SCRIPT");
@@ -745,6 +761,53 @@ int main(int argc, char **argv) {
                     ImGui::EndTooltip();
                 }
             }
+            ImGui::SeparatorText("Discs");
+            {
+                auto base_name = [](const std::string &p) { return p.substr(p.find_last_of("/\\") + 1); };
+                const ImVec4 ok(0.45f, 0.85f, 0.45f, 1), missing(0.6f, 0.6f, 0.6f, 1);
+                ImGui::TextColored(ok, "Japan (SCPS-18011)");
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", base_name(g_jp_disc_path).c_str());
+                if (ImGui::BeginItemTooltip()) {
+                    ImGui::Text("Required. The game itself runs from this disc.\n%s", g_jp_disc_path.c_str());
+                    ImGui::EndTooltip();
+                }
+                if (!g_usa_disc_path.empty()) {
+                    ImGui::TextColored(ok, "USA (SCUS-94448)");
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", base_name(g_usa_disc_path).c_str());
+                } else {
+                    ImGui::TextColored(missing, "USA (SCUS-94448)");
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("not found");
+                }
+                if (ImGui::BeginItemTooltip()) {
+                    ImGui::TextUnformatted("Optional. Adds the English title logo, English menu text and tooltips,\n"
+                                           "English memory card messages, and the English credits song.\n"
+                                           "Found automatically next to the Japanese disc image.");
+                    if (!g_usa_disc_path.empty()) ImGui::Text("%s", g_usa_disc_path.c_str());
+                    ImGui::EndTooltip();
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton(g_usa_disc_path.empty() ? "Choose..." : "Change...")) {
+                    static const SDL_DialogFileFilter filters[] = {{"PlayStation disc image", "bin;img;iso"}, {"All files", "*"}};
+                    SDL_ShowOpenFileDialog(usa_pick_cb, nullptr, win, filters, 2, nullptr, false);
+                }
+                if (g_usa_pick.exchange(0)) {
+                    if (disc_image_boots(g_usa_pick_path.c_str(), "SCUS_944.48")) {
+                        ini_set("usa_disc", g_usa_pick_path);
+                        g_usa_pick_msg = g_usa_pick_path == g_usa_disc_path ? "That's the USA disc already in use."
+                                                                            : "USA disc saved. Restart the game to use it.";
+                    } else
+                        g_usa_pick_msg = "That image isn't the USA Um Jammer Lammy disc (SCUS-94448).";
+                }
+                if (!g_usa_pick_msg.empty()) ImGui::TextWrapped("%s", g_usa_pick_msg.c_str());
+                ImGui::BeginDisabled();
+                ImGui::TextColored(missing, "UJL NOW! arcade CD");
+                ImGui::SameLine();
+                ImGui::TextDisabled("(soon)");
+                ImGui::EndDisabled();
+            }
             ImGui::SeparatorText("Memory card");
             {
                 char names[15][21];
@@ -851,6 +914,7 @@ int main(int argc, char **argv) {
             SDL_DestroySurface(sf);
         }
         if (g_script_quit) running = false;
+        for (int n = g_script_overlay.exchange(0); n > 0; n--) g_set.show_overlay = !g_set.show_overlay;
         if (win_hidden) {
             // Nothing visible to present. Swapping with vsync on can block indefinitely for an occluded window,
             // which left the game black until it was clicked; keep replaying frames and pace with a sleep.
