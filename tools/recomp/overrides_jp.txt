@@ -10,7 +10,9 @@
 8004e554  hle_spu_set_transfer_addr
 # Debug: UJL_FORCE_RATING pins the rating (src/runtime/unlock.c).
 80019580  hook_force_rating
-# Debug: UJL_FORCE_SCENE=n turns a Stage 1 story start into scene n (8 = staff roll) (src/runtime/unlock.c).
+# Debug: UJL_FORCE_SCENE=stage,sub turns a Stage 1 story start into that stage/sub (8,3 = staff roll) (src/runtime/unlock.c).
 80013e8c  hook_force_scene
 # English tooltip bar: point Stage Select tooltip sprites at the US word sheet (src/runtime/patch.c).
 801cbc4c@COMOD0.MEN  hook_tooltip_sprite
+# English credits song: hold the JP staff roll's end cue until the longer US song has finished (src/runtime/patch.c).
+801c624c@COMOD8.SNG  hook_credits_hold

@@ -458,6 +458,8 @@ bool disc_find_file(const char *path, uint32_t *lba, uint32_t *size);
 bool aux_disc_find_file(const char *path, uint32_t *lba, uint32_t *size);
 bool aux_disc_read_sector(uint32_t lba, uint8_t out[2352]);
 static uint32_t song_jp_lba, song_us_lba, song_nsec;
+static uint32_t song_last_ch7;   /* file-relative index of the last channel-7 sector read, +1 (0 = none) */
+static uint32_t song_ch7_end;    /* file-relative index of the final channel-7 sector, +1 */
 #define CREDITS_XA_CHANNEL 7
 
 static void english_credits_song(void) {
@@ -480,6 +482,10 @@ static void english_credits_song(void) {
         }
     }
     song_jp_lba = jl; song_us_lba = ul; song_nsec = js / 2048;
+    song_ch7_end = 0; song_last_ch7 = 0;
+    for (uint32_t i = song_nsec; i-- > 0 && i + 16 >= song_nsec; )   /* the final channel-7 sector */
+        if (disc_read_sector(jl + i, a) && a[17] == CREDITS_XA_CHANNEL && (a[18] & 0x04)) { song_ch7_end = i + 1; break; }
+    if (!song_ch7_end) song_ch7_end = song_nsec;
     LOGI("patch: credits song: XA channel %d of S1/ST1.XA from the USA disc", CREDITS_XA_CHANNEL);
 }
 
@@ -651,9 +657,41 @@ void patch_init(void) {
     if (g_patch_english_credits_song) english_credits_song();
 }
 
+/* Staff roll length: the JP roll (COMOD8.SNG) ends ~82 s into the song, when its timeline raises event bit 0x100
+   in the per-frame event buffer (0x80078330). The timeline thread (O41_801c5168) then sets the overlay flag
+   0x801c6368, and the main loop (O41_801c5370) fades out over 90 frames and returns to the menu. That suits the JP
+   instrumental, but the US vocal song swapped in here runs the whole 145.8 s of channel 7 and was cut mid-verse.
+   While the US song plays, this hook (on O41_801c624c, which the timeline thread calls every frame right after
+   the flag check, with no yield in between) holds the flag clear, so the roll stays on its final copyright card.
+   The cue fires only once, so the hook raises the flag itself when the CD gets within CREDITS_FADE_SECTORS of the
+   song's last sector: the 90-frame fade then covers the final chord and the scene stops the CD at the end of the
+   file (left alone, it streams on into the next file). A skip button still ends it early (the main loop reads the
+   pad itself). UJL_JP_CREDITS_SONG=1 keeps the JP song and the JP length. */
+#define CREDITS_FADE_SECTORS 120   /* ~1.6 s at 1x: the 1.5 s fade plus a frame or two before it starts */
+void hook_credits_hold(CPU *c, uint32_t fn) {
+    (void)c; (void)fn;
+    static int held;
+    if (!song_nsec) return;
+    const char *ov = rt_current_overlay_name();
+    if (!ov || strcmp(ov, "COMOD8.SNG")) return;
+    if (song_last_ch7 < 64) held = 0;               /* a new run of the song */
+    int done = song_last_ch7 + CREDITS_FADE_SECTORS >= song_ch7_end;
+    if (mem_r32(0x801c6368u)) {
+        if (done) return;
+        if (!held) LOGI("patch: credits song: holding the staff roll's end until the US song finishes");
+        held = 1;
+        mem_w32(0x801c6368u, 0);
+    } else if (held && done) {
+        LOGI("patch: credits song: song finished, ending the staff roll");
+        held = 0;
+        mem_w32(0x801c6368u, 1);
+    }
+}
+
 /* Called for every sector read: substitute patched user data. */
 void patch_sector(uint32_t lba, uint8_t sec[2352]) {
     if (song_nsec && lba - song_jp_lba < song_nsec && sec[17] == CREDITS_XA_CHANNEL && (sec[18] & 0x04)) {
+        song_last_ch7 = lba - song_jp_lba + 1;
         uint8_t us[2352];
         uint64_t t0 = SDL_GetPerformanceCounter();
         int ok = aux_disc_read_sector(song_us_lba + (lba - song_jp_lba), us);

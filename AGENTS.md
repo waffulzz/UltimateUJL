@@ -73,7 +73,7 @@ There's no unit test suite. Verification means running the game headless or scri
   `UJL_SCRIPT_UNLOCK=1`, `UJL_SCRIPT_CARD`, `UJL_SCRIPT_HIDDEN=WxH`. Confirm-with-Cross is on by default, so menus take
   `cross`.
 - Runtime stats/A-B switches (all env vars): `UJL_CD_STATS`, `UJL_FLIP_STATS`, `UJL_GTE_STATS`, `UJL_SUBPIX_STATS`,
-  `UJL_WAIT_STATS`, `UJL_FAST_LOAD`, `UJL_SOFT_RASTER`, `UJL_FORCE_RATING`, and `UJL_JP_*` to disable each English patch.
+  `UJL_WAIT_STATS`, `UJL_FAST_LOAD`, `UJL_SOFT_RASTER`, `UJL_FORCE_RATING`, `UJL_FORCE_SCENE` (8,3 = staff roll from Stage 1), and `UJL_JP_*` to disable each English patch.
   The game log is `build/cmake/ujl.log`.
 
 ## Architecture (big picture)

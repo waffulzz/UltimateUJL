@@ -322,6 +322,22 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
 - Stage table in SCPS_180.11: 0x128-byte entries from 0x8005841c (scene 1 SNG), 3 per stage for 2-7 (SNG/CMP/COP),
   scene 8 (staff roll) at 0x80059a14. F_80016720(entry) stores the current entry at 0x801a23ec.
   PROBE_COPY=dst,src,len,sec copies guest memory once (e.g. scene 8's entry over Stage 1's).
+- **Scene selection**: the loader F_80013e8c maps the stage/sub pair at 0x80078ae0/e4 to a scene with F_800190d8
+  (stage+10 for sub 0/1/5, else stage) and a column with F_800190fc (0 = SNG for sub 0/3/4, 1 = CMP/COP). The
+  overlay entry comes from the table at 0x8005b3b0 (48 bytes per scene, 16 per column: entry fn, stage-table data,
+  next scene). Stage 1 story is stage 1 sub 0 = scene 11 (COMOD11.SNG); the staff roll is scene 8 column 0
+  (stage 8 sub 3), overlay entry O41_801c55e4. Debug: UJL_FORCE_SCENE=8,3 turns a Stage 1 story start into the
+  staff roll (hook_force_scene, unlock.c). Probe: `UJL_FORCE_SCENE=8,3 ... -press 15:start -press 20:start
+  -press 36:down -press 38:circle -press 44:circle -press 50:circle`; the song starts at ~54 s.
+- **Credits song cut off (fixed, patch.c hook_credits_hold)**: the JP staff roll ends ~82 s into the song: its
+  timeline raises event bit 0x100 (buffer 0x80078330), the timeline thread O41_801c5168 sets the overlay flag
+  0x801c6368, and the main loop O41_801c5370 (which also exits on a skip button or song-state bit 0x20000000 of
+  0x801a2364) fades out over 90 frames. The JP and US channel-7 songs both fill the whole 145.8 s of ST1.XA; the JP
+  roll just fades its instrumental early, which cut the US vocal song mid-verse. While the US song is swapped in,
+  a hook on O41_801c624c (called by the timeline thread right after the flag check, no yield between) holds the
+  flag clear, so the roll rests on its final logo card, and raises it itself 120 sectors (~1.6 s) before the
+  song's last channel-7 sector: the cue is one-shot, and left alone the CD streams on into the next file. Probe:
+  hold at ~136 s, fade at ~198 s, Stage Select at ~201 s.
 
 ## To do
 - **Setup wizard (first run)**: imports the user's discs and gates features on what was imported.
@@ -350,10 +366,6 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   between consecutive frames' primitive lists (match prims frame to frame, lerp vertices), with a fallback
   to plain 60 when matching fails. Research item: may not be clean for every scene.
 - SPU reverb/noise, memory card saves, Stage 8 captions check.
-- **Credits song cut off (user report 2026-11-15)**: the JP staff roll after Stage 7 (scene 8) is shorter than the US
-  vocal credits song now swapped in (ST1.XA channel 7), so the song stops early. Options: extend the JP staff roll's
-  timeline/end condition to the US song's length (the US COMOD8.SNG is larger, likely a longer roll), or end on the
-  song's own end (XA EOF), or fade out. Needs a look at how scene 8 decides it's finished.
 - **Score comparison vs personal best (user request 2026-11-15)**: next to the score counter, show how the current
   run compares to the best run at the same point in the song: ahead (improving), on track, or behind
   (underperforming), e.g. a +/- delta coloured green/yellow/red. Needs: read the live score from RAM (player struct

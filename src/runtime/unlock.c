@@ -28,6 +28,7 @@ void unlock_tick(void) {
    (F_80019580, table at 0x80010b0c: meter 0-2 COOL, 3-6 GOOD, 7-10 BAD, 11+ AWFUL) a fixed meter.
    Used to reach fever mode headless. */
 #include <stdlib.h>
+#include <stdio.h>
 void hook_force_rating(CPU *c, uint32_t fn) {
     (void)fn;
     static int forced = -2;
@@ -37,16 +38,18 @@ void hook_force_rating(CPU *c, uint32_t fn) {
     mem_w16(0x80071dc0u, (uint16_t)c->r[4]); /* player 1 meter (struct 0x80071dbc +4) */
 }
 
-/* Debug: UJL_FORCE_SCENE=n replaces the next scene number (0x80078ae0) once, when the scene loader F_80013e8c
-   is about to start Stage 1 story (scene 11). n=8 jumps straight to the staff roll. */
+/* Debug: UJL_FORCE_SCENE=stage[,sub] rewrites the stage/sub pair (0x80078ae0/e4) once, when the scene loader
+   F_80013e8c is about to start Stage 1 story (1,0). It maps them to the scene (F_800190d8: stage+10 for sub 0/1/5,
+   else stage) and the SNG/CMP/COP column (F_800190fc: 0 for sub 0/3/4). UJL_FORCE_SCENE=8,3 = staff roll. */
 void hook_force_scene(CPU *c, uint32_t fn) {
     (void)c; (void)fn;
-    static int forced = -2;
-    if (forced == -2) { const char *e = getenv("UJL_FORCE_SCENE"); forced = e ? atoi(e) : -1; }
-    if (forced < 0 || mem_r32(0x80078ae0u) != 11) return;
-    rt_log("force scene: %u -> %d", mem_r32(0x80078ae0u), forced);
-    mem_w32(0x80078ae0u, (uint32_t)forced);
-    forced = -1;
+    static int stage = -2, sub;
+    if (stage == -2) { const char *e = getenv("UJL_FORCE_SCENE"); stage = -1; if (e && sscanf(e, "%d,%d", &stage, &sub) < 1) stage = -1; }
+    if (stage < 0 || mem_r32(0x80078ae0u) != 1 || mem_r32(0x80078ae4u) != 0) return;
+    rt_log("force scene: stage %d sub %d", stage, sub);
+    mem_w32(0x80078ae0u, (uint32_t)stage);
+    mem_w32(0x80078ae4u, (uint32_t)sub);
+    stage = -1;
 }
 
 /* PROBE_MORPH=hexdest (debug): log the morph blend calls (F_8003d944: a0 dest verts, a1 delta verts, a2 count,

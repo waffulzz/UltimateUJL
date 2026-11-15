@@ -178,6 +178,7 @@ void hle_vsync_wait(CPU *c, uint32_t counter_addr, uint32_t fn_clearpad, uint32_
 void hle_spu_set_transfer_addr(CPU *c);
 void hook_force_rating(CPU *c, uint32_t fn);
 void hook_force_scene(CPU *c, uint32_t fn);
+void hook_credits_hold(CPU *c, uint32_t fn);
 void hook_morph_log(CPU *c, uint32_t fn);
 void hook_anim_log(CPU *c, uint32_t fn);
 void hook_tooltip_sprite(CPU *c, uint32_t fn);
