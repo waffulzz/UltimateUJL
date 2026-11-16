@@ -23,7 +23,10 @@ static void emit(const GpuPrim *p) { assert(count < 32); emitted[count++] = *p; 
 static void draw(void) { count = 0; g_gpu_frame++; score_delta_draw(&digit, emit); }
 static void sample(int time, int value) { mem_w32(0x80078af8, (uint32_t)time); mem_w16(0x80071dbc, (uint16_t)value); score_delta_tick(); }
 static void finish(int result) { CPU c = {0}; c.r[4] = (uint32_t)result; hook_score_run_finish(&c, 0x800142e8); }
-static void restart(void) { mem_w32(0x80078af8, 0); mem_w16(0x80071dbc, 0); score_delta_tick(); draw(); }
+static void restart(void) {
+    CPU c = {0}; hook_score_attempt_reset(&c, 0x8001a940);
+    mem_w32(0x80071dd4, 0); mem_w32(0x80078af8, 0); mem_w16(0x80071dbc, 0); draw();
+}
 static void expect_color(int r, int g, int b) {
     assert(count >= 2);
     for (int i = 0; i < count; i++) {
@@ -71,6 +74,22 @@ int main(int argc, char **argv) {
     restart(); sample(100, 150); sample(200, 250); overlay = "COMOD0.MEN";
     score_delta_tick(); mem_w16(0x80071dbc, 300); finish(1); overlay = "COMOD6.SNG";
     restart(); sample(200, 300); draw(); expect_color(128, 128, 128);
+
+    /* Stage 3's ending movie resets the clock while the song overlay and old HUD are still present.
+       Keep the complete trace through that reset, then save it at the later results hook. */
+    restart(); sample(100, 200); sample(200, 400);
+    mem_w32(0x80078af8, 0); score_delta_tick(); draw(); assert(!count);
+    finish(1); restart(); sample(200, 400); draw(); expect_color(128, 128, 128);
+    /* A real retry calls the initializer and must not inherit the previous attempt's score points. */
+    restart(); sample(100, 1000); restart(); sample(100, 250); sample(200, 500); finish(1);
+    restart(); sample(100, 250); draw(); expect_color(128, 128, 128);
+    /* A full song counts even below GOOD (result zero). Early failure and Start/quit have separate bits. */
+    restart(); sample(100, 300); mem_w32(0x80071dd4, 8); sample(200, 600); finish(0);
+    restart(); sample(200, 600); draw(); expect_color(128, 128, 128);
+    restart(); sample(100, 1500); mem_w32(0x80071dd4, 0x29); sample(200, 2000); finish(0);
+    restart(); sample(200, 600); draw(); expect_color(128, 128, 128);
+    restart(); sample(100, 1500); mem_w32(0x80071dd4, 9); sample(200, 2000); finish(0);
+    restart(); sample(200, 600); draw(); expect_color(128, 128, 128);
 
     /* Invalid files and a different mode never supply a bogus reference. */
     assert(SDL_SaveFile(path, "bad", 3)); score_delta_init(dir); mem_w32(0x80078af8, 0); draw(); assert(!count);

@@ -185,6 +185,7 @@ void hook_tooltip_sprite(CPU *c, uint32_t fn);
 void hook_hiscore_insert(CPU *c, uint32_t fn);
 void hook_menu_screen(CPU *c, uint32_t fn);
 void hook_score_run_finish(CPU *c, uint32_t fn);
+void hook_score_attempt_reset(CPU *c, uint32_t fn);
 int filter_replay_directory(CPU *c, uint32_t fn);
 int filter_replay_slots(CPU *c, uint32_t fn);
 int filter_replay_save(CPU *c, uint32_t fn);

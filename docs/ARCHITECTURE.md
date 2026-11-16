@@ -318,9 +318,12 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   follows the normal 2D pillarboxing at all aspect ratios. Co-op uses its shared score; COM counters get no delta.
   - Sample signed `player_score` (80019504, meter at 80071dbc; versus P2 +10) against `song_time_get`
     (80019244, clock at 80078af8), keeping only score changes. Begin at the first counter, not overlay loading
-    (the player state is initialized later). A rewind discards the pending run. `stage_results_apply`
-    (800142e8), called after scene cleanup and before high-score/name-entry decisions, takes positive for a
-    completed run and zero/negative for failure/quit. Its hook includes a final award after the last visible HUD.
+    (the player state is initialized later). Preserve the trace when the clock rewinds: the AGAIN? prompt and
+    ending movies reset it before results (reproduced on Stage 3). `song_attempt_reset` (8001a940) explicitly
+    discards an old attempt when the player retries. `stage_results_apply` (800142e8), called after scene cleanup
+    and before high-score/name-entry decisions, returns a grade-dependent result: zero can mean a full song
+    below GOOD. Latch the natural end from 80071dd4 bit 3 with bits 0/5 clear (early failure / Start quit).
+    Either a positive result or that natural end can save a reference. Include a final award after the last HUD.
     Only a complete, unassisted human run with a higher final score replaces the reference; never mix the
     per-time maxima from different runs. Replay, attract and any Autoplay use cannot write references.
   - Store only times/scores in `score_traces/` beside the executable (iOS: app Documents). Separate by stage,
@@ -332,8 +335,10 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     overflowed runs are discarded. `UJL_SCORE_TRACE_DIR` isolates test fixtures; `UJL_SCORE_LOG=1` logs sampling.
   - Verification: `ujl_score_test` (explicit build target, synthetic RAM only) covers native primitives, matching
     song times, persistence/replacement, failure/Autoplay/replay exclusions, final awards, corrupt files,
-    separate versus players and shared co-op. Disc-free smoke passes; Stage 6 checked with the software renderer
-    and the hardware renderer at 21:9 using isolated reference fixtures.
+    separate versus players and shared co-op, full-song low grades, prompt clock resets, and real retries.
+    Disc-free smoke passes; Stage 6 checked with the software renderer and the hardware renderer at 21:9 using
+    isolated reference fixtures. Stage 3 verified through the real prompt/results path, saving after the clock
+    reset; a saved full-song replay also reaches natural end with a zero result (flags 0xc).
 - **Unlock all (src/runtime/unlock.c)**: ORs progress bits into 0x801a5310 every vblank: +0x07 stage mask,
   +0x08/09, +0x0A..0F and +0x1A..1F per-stage flags (0x3f), +0x10..18 mode flags. Saving with it on keeps them.
 - **Sound engine thread / guitar audio**: the game's sound engine is an object whose tick (vtable entry,

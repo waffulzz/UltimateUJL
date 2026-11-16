@@ -111,6 +111,9 @@ void host_vblank(void) {
     gpu_rec_vblank();
     reclog();
     frames++;
+    {   /* PROBE_TURBO=1: unpaced emulation for long headless traces; guest timers/CD still advance normally. */
+        if (getenv("PROBE_TURBO")) { extern uint64_t g_load_turbo_until; g_load_turbo_until = g_now + PSX_CLOCK; }
+    }
     {   /* PROBE_VRAMDUMP_AT=sec: raw 1024x512x16 VRAM to build/vram.bin */
         const char *e = getenv("PROBE_VRAMDUMP_AT");
         if (e && frames == atoi(e) * 60) { FILE *f = fopen("build/vram.bin", "wb"); if (f) { fwrite(g_vram, 2, 1024 * 512, f); fclose(f); } }

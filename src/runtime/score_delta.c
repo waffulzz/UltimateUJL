@@ -9,6 +9,7 @@
 #define SONG_TIME   0x80078af8u
 #define PLAYER(p)   (0x80071cb8u + 96u * (p))
 #define REPLAY_MODE 0x80071dd0u /* 0 live, 1 replay, 2 attract */
+#define SONG_FLAGS  0x80071dd4u /* bit 3: scene ended; bit 0: early failure; bit 5: Start/quit */
 #define MAX_POINTS  4096
 #define MAX_TIME    (60 * 60 * 300) /* reject corrupt clocks/files; well above every song */
 extern int g_autoplay, g_autoplay_used, g_uncensored;
@@ -17,7 +18,7 @@ typedef struct { int32_t time, score; } Point;
 typedef struct { uint32_t stage, variant, mode, inputs, profile, censored; } Key;
 typedef struct { Point points[MAX_POINTS]; uint32_t count; int final_score, end_time; } Trace;
 static struct {
-    int active, pending, assisted, overflow, last_time;
+    int active, pending, assisted, overflow, last_time, completed;
     Key key;
     Trace run[2], best[2];
     int human[2];
@@ -100,6 +101,14 @@ void score_delta_init(const char *directory) {
     log_on = getenv("UJL_SCORE_LOG") != NULL;
 }
 
+/* The native attempt initializer also runs for AGAIN? -> retry. An ending movie resets the song
+   clock too, but does not call this initializer: retain that completed trace until results arrive. */
+void hook_score_attempt_reset(CPU *c, uint32_t fn) {
+    (void)c; (void)fn;
+    if (log_on && state.pending) LOGI("score delta: new attempt, discarding previous pending trace");
+    memset(&state, 0, sizeof state);
+}
+
 static void begin_run(void) {
     memset(&state, 0, sizeof state);
     Key *k = &state.key;
@@ -121,8 +130,12 @@ static void begin_run(void) {
 static void sample_scores(int tm) {
     state.last_time = tm;
     state.assisted |= g_autoplay || g_autoplay_used || mem_r32(REPLAY_MODE) != 0;
+    uint32_t flags = mem_r32(SONG_FLAGS);
+    state.completed |= tm > 0 && (flags & 8) && !(flags & 0x21);
     for (int p = 0; p < 2; p++) {
-        if (!state.human[p]) continue;
+        /* Native replay input sources are COM slots; still expose their score timeline to diagnostics.
+           They remain assisted and cannot write references. */
+        if (!state.human[p] && !(log_on && p == 0 && mem_r32(REPLAY_MODE) == 1)) continue;
         Trace *t = &state.run[p];
         Point *last = &t->points[t->count - 1];
         int sc = score(p);
@@ -139,24 +152,29 @@ void score_delta_tick(void) {
     if (!song_context()) { state.active = 0; return; }
     int tm = (int32_t)mem_r32(SONG_TIME);
     if (tm < 0 || tm > MAX_TIME) return;
-    if (tm < state.last_time || mem_r32(SCENE) != state.key.stage || mem_r32(SCENE + 4) != state.key.variant) {
-        state.active = state.pending = 0; return; /* retry/new song: next counter starts a new trace */
+    if (mem_r32(SCENE) != state.key.stage || mem_r32(SCENE + 4) != state.key.variant) {
+        state.active = state.pending = 0; return;
+    }
+    if (tm < state.last_time) {
+        if (log_on) LOGI("score delta: clock reset %d -> %d; retaining trace for results", state.last_time, tm);
+        state.active = 0; return; /* ending movie; only the attempt initializer discards a retry */
     }
     sample_scores(tm);
 }
 
-/* stage_results_apply(result): positive = completed; zero/negative = failed, quit or retry. This runs
-   before the menu/name-entry decision, so even a first run below the memory card's high scores is captured. */
+/* Results encode the final grade as well as completion: a full song below GOOD can return zero.
+   The latched natural-end flag also accepts those runs, while Start/quit and retries are excluded. */
 void hook_score_run_finish(CPU *c, uint32_t fn) {
     (void)fn;
+    if (log_on) LOGI("score delta: finish result %d active %d pending %d time %d natural-end %d flags %x", (int)c->r[4], state.active, state.pending, state.last_time, state.completed, mem_r32(SONG_FLAGS));
     if (!state.pending) return;
     score_delta_tick();
     /* Cleanup can run between vblanks: include the final score even if no further HUD frame was drawn. */
     if (state.pending) sample_scores(state.last_time);
-    if ((int32_t)c->r[4] > 0 && state.pending && !state.assisted && !state.overflow && state.last_time > 0) {
+    if (((int32_t)c->r[4] > 0 || state.completed) && state.pending && !state.assisted && !state.overflow && state.last_time > 0) {
         for (int p = 0; p < 2; p++)
             if (state.human[p] && (!state.best[p].count || score(p) > state.best[p].final_score)) save_best(p);
-    } else if (log_on) LOGI("score delta: run not recorded (result %d, assisted %d)", (int)c->r[4], state.assisted);
+    } else if (log_on) LOGI("score delta: run not recorded (result %d, completed %d, assisted %d)", (int)c->r[4], state.completed, state.assisted);
     state.active = state.pending = 0;
 }
 
@@ -185,10 +203,10 @@ void score_delta_draw(const GpuPrim *p, void (*emit)(const GpuPrim *)) {
         (p->v[0].u - 32) % 10 || p->v[0].y - p->clip_y0 != 170 || !song_context() || mem_r32(REPLAY_MODE) == 2) return;
     int x = p->v[0].x - p->clip_x0;
     if (x != 52 && x != 292) return;
-    if (!state.active) begin_run();
+    if (!state.active && !state.pending) begin_run();
     if (!state.active) return;
     score_delta_tick();
-    if (!state.active) { begin_run(); if (!state.active) return; score_delta_tick(); }
+    if (!state.active) return;
     int player = x == 292;
     if (!state.human[player]) return;
     if (!state.best[player].count) return; /* first run: capture silently until a reference exists */

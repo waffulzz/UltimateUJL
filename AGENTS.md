@@ -99,6 +99,7 @@ Verification primarily means running the game headless or scripted and inspectin
   - `PROBE_WATCH_CLUT=hex`: finds the code that draws a texture.
   - `PROBE_MEMLOG=addr,len,sec,n`: per-frame RAM log.
   - `PROBE_STACK_AT`, `PROBE_COPY`, `PROBE_FREEZE`, `PROBE_POKE`, `PROBE_VRAMDUMP_AT`, `PROBE_CARD=file.mcd`.
+  - `PROBE_TURBO=1`: run headless emulation without host pacing (guest timers/CD still use emulated time).
 
   Copy the probe to `ujl_probe_run.exe` before long runs so rebuilds aren't blocked.
   Videos: `-wav -burst START N` writes every vblank to `build/shots/bNNNNN.bmp` (N = 10000 + vblank) and the audio of
