@@ -83,6 +83,9 @@ set(RUNTIME_SOURCES
 add_library(runtime STATIC ${RUNTIME_SOURCES})
 target_include_directories(runtime PUBLIC src/runtime "${RECOMP_DIR}")
 target_link_libraries(runtime PUBLIC recomp SDL3::SDL3-static)
+# Generated functions call native hooks in otherwise unreferenced runtime objects. Declare the real static
+# library cycle so CMake repeats both archives on ELF linkers instead of losing those hook definitions.
+target_link_libraries(recomp PRIVATE runtime)
 target_compile_definitions(runtime PUBLIC UJL_REPLAY_FILES=$<BOOL:${UJL_REPLAY_FILES}>)
 target_compile_options(runtime PRIVATE -Wall -Wno-unused-function -O2)
 
@@ -184,6 +187,7 @@ if(EXISTS "${RECOMP_DIR_US}/recomp_files.cmake" AND NOT UJL_IOS)
   add_library(runtime_us STATIC ${RUNTIME_SOURCES})
   target_include_directories(runtime_us PUBLIC src/runtime "${RECOMP_DIR_US}")
   target_link_libraries(runtime_us PUBLIC recomp_us SDL3::SDL3-static)
+  target_link_libraries(recomp_us PRIVATE runtime_us)
   target_compile_options(runtime_us PRIVATE -w -O2)
   add_executable(ujl_probe_us src/probe_main.c)
   target_include_directories(ujl_probe_us PRIVATE src)

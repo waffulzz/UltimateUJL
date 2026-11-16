@@ -48,6 +48,11 @@ Probe: `ujl_probe.exe -t SECS -shot -wav -press T:BTN ...` → build/shots/tNNN.
 Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build build/cmake`
 
 ## Things learned the hard way
+- **Static archive order on Linux**: the real generated program references hooks such as
+  `hook_default_language` and `hle_spu_set_transfer_addr` from runtime objects that may otherwise be unused.
+  ELF's one-pass archive scan misses them if the link is only `runtime recomp`. Declare the actual static
+  dependency cycle in CMake (`recomp PRIVATE runtime`, and the equivalent USA pair), so both archives repeat.
+  Windows/Apple linkers and the smaller synthetic program had masked this; the playable CI build caught it.
 - **Overlays**: `COMOD*.{MEN,SNG,CMP,COP}` are code overlays loaded at 0x801c5110 (right after BSS). There are 42 on
   the JP disc, recompiled with prefix `Onn_`. The runtime picks the active one by a 32-byte code signature
   (`recomp_overlays.c`). Main-exe functions that only overlays call are seeded from overlay references.
