@@ -35,6 +35,7 @@ int memcard_list(int slot, char names[][21], int *blocks, int max);
 int memcard_free_blocks(int slot);
 const char *memcard_path(int slot);
 extern int g_unlock_all;
+extern "C" SDL_Thread *rt_create_thread(SDL_ThreadFunction fn, const char *name, void *data); // bios.c: big-stack thread
 extern "C" int g_cd_fast_load;            // cdrom.c: fast data loading + loading turbo (setting "fast_load")
 extern "C" int rt_load_turbo_active(void); // cpu.c: the emulation is fast-forwarding through a load
 const char *rt_current_overlay_name(void);
@@ -552,7 +553,7 @@ int main(int argc, char **argv) {
     gpu_rec_set_enabled(g_set.renderer == 1);
     GpuDisplay hw_disp = g_gpu_display;
     bool hw_have_frame = false;
-    SDL_Thread *gt = SDL_CreateThread(game_thread, "game", nullptr);
+    SDL_Thread *gt = rt_create_thread(game_thread, "game", nullptr);
     (void)gt;
 
     GLuint tex_frame = make_tex(640, 480), tex_vram = make_tex(1024, 512);
@@ -929,7 +930,10 @@ int main(int argc, char **argv) {
         }
     }
     memcard_flush(); // don't lose a save made in the last second
-    // the game thread can't be unwound cleanly; leave the process
-    SDL_Quit();
+    // The game thread can't be unwound cleanly and keeps calling into SDL (audio stream, timers, semaphores), so
+    // SDL_Quit() here would free those under it: a segfault on exit on Linux. Close only what the UI thread owns
+    // (the game thread never touches the window or GL) and leave the process; exit releases the rest.
+    SDL_GL_DestroyContext(gl);
+    SDL_DestroyWindow(win);
     _Exit(0);
 }

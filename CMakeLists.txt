@@ -4,6 +4,12 @@ project(ujl_pc C CXX)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
+# Clang is the supported compiler on every platform (llvm-mingw on Windows, Apple clang on macOS, clang on
+# Linux): the generated code is tens of MB of C with huge functions and is only tested with clang.
+if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+  message(WARNING "Compiler ${CMAKE_C_COMPILER_ID} is untested; configure with -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++")
+endif()
+
 # Generated recompiled code (produced from the user's own disc by tools/prepare.sh)
 set(RECOMP_DIR "${CMAKE_SOURCE_DIR}/build/gen_jp" CACHE PATH "Directory with generated recomp_*.c")
 if(NOT EXISTS "${RECOMP_DIR}/recomp_files.cmake")
@@ -72,6 +78,11 @@ if(WIN32)
 endif()
 add_executable(ujl src/frontend/main.cpp src/frontend/gl_funcs.cpp src/frontend/hw_renderer.cpp ${UJL_ICON_RC})
 target_link_libraries(ujl PRIVATE runtime imgui OpenGL::GL)
+if(APPLE)
+  # macOS ships OpenGL 4.1 core, deprecated but working; keep the build log quiet about it
+  target_compile_definitions(ujl PRIVATE GL_SILENCE_DEPRECATION)
+  target_compile_definitions(imgui PRIVATE GL_SILENCE_DEPRECATION)
+endif()
 if(MINGW)
   # self-contained exe: no libc++/libunwind DLLs next to it
   target_link_options(ujl PRIVATE -static)

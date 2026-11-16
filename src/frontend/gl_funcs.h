@@ -1,6 +1,7 @@
 // Minimal OpenGL 3.3 function loader for the hardware renderer (GL 1.1 entry points come from the
 // system GL library; everything newer is fetched through SDL_GL_GetProcAddress).
 #pragma once
+#include <stddef.h> /* ptrdiff_t (glibc's GL headers don't pull it in) */
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 

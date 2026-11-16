@@ -38,6 +38,12 @@ cmake --build build/cmake                       # all targets
 cmake --build build/cmake --target ujl_probe    # just the headless probe
 ```
 
+macOS and Linux build the same way with clang (Apple clang on macOS). Install `cmake ninja python3` (macOS:
+`brew install cmake ninja`; Debian/Ubuntu: `clang cmake ninja-build python3 libgl-dev` plus SDL3's X11/Wayland/audio
+dev packages, see `.github/workflows/ci.yml`), then run the same `prepare.sh` and `cmake` commands. Binaries have no
+`.exe` suffix there. Host threads that run recompiled code are created with an explicit 8 MB stack
+(`rt_create_thread` in `bios.c`), because macOS gives secondary threads only 512 KB.
+
 After editing `tools/recomp/gen.py` or `tools/recomp/overrides_*.txt`, regenerate. This is the generator step of
 `prepare.sh`:
 
@@ -47,12 +53,23 @@ python -I tools/recomp/gen.py build/exe/SCPS_180.11 build/gen_jp --seeds tools/r
 ```
 
 Targets: `ujl` (the game: SDL3, OpenGL, ImGui), `ujl_probe` (headless test harness), `ujl_probe_us` (USA build, analysis
-only), `ujl_padtest`. Run the game with `build/cmake/ujl.exe "Um Jammer Lammy (JP).bin"` (or `Play UJL.bat`).
+only), `ujl_padtest`. Run the game with `build/cmake/ujl.exe "Um Jammer Lammy (JP).bin"` (or `Play UJL.bat`, `play-ujl.sh` on macOS/Linux).
 Settings persist in `build/cmake/ujl.ini`. The USA disc is found automatically next to the JP image.
 
 ## Testing and debugging
 
 There's no unit test suite. Verification means running the game headless or scripted and inspecting output.
+
+- **CI smoke test** (`tests/smoke/smoke.py`, run by `.github/workflows/ci.yml` on Windows, Linux and macOS). CI has no
+  disc, so it assembles a small synthetic PS-X EXE onto a generated ISO image, recompiles it with `gen.py`, builds
+  every target against that (`-DRECOMP_DIR=build/smoke/gen`), boots it in the probe and checks guest RAM and the
+  displayed frame. On Linux it also runs `ujl` under Xvfb and checks the hardware renderer's screenshot. Run it locally
+  with a separate build dir:
+  `python -I tests/smoke/smoke.py gen build/smoke`, configure `build/smoke/cmake` with
+  `-DRECOMP_DIR=<abs path>/build/smoke/gen` (Git Bash: `$(pwd -W)`), build, then
+  `python -I tests/smoke/smoke.py run build/smoke/cmake/ujl_probe.exe build/smoke` (and `frontend ... ujl.exe ...`).
+  Because of this, the runtime must not reference generated `F_`/`O..._` functions directly: call game functions
+  by address with `call_indirect` (see `fbstream.c`), or the smoke build fails to link.
 
 - **Probe** (software renderer, deterministic-ish, fastest):
   `build/cmake/ujl_probe.exe "Um Jammer Lammy (JP).bin" -t SECS [-shot] [-burst SEC N] [-wav] [-unlock] -press T:BTN ...`

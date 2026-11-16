@@ -166,6 +166,20 @@ static void load_regs(CPU *c, int i) {
     }
 }
 
+/* Host threads that run recompiled code get an explicit stack: platform defaults differ (macOS gives secondary
+   threads only 512 KB, Windows 1 MB, Linux 8 MB) and deep guest call chains recurse on the host stack. */
+#define RT_THREAD_STACK (8u << 20)
+SDL_Thread *rt_create_thread(SDL_ThreadFunction fn, const char *name, void *data) {
+    SDL_PropertiesID p = SDL_CreateProperties();
+    SDL_SetPointerProperty(p, SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER, (void *)fn);
+    SDL_SetStringProperty(p, SDL_PROP_THREAD_CREATE_NAME_STRING, name);
+    SDL_SetPointerProperty(p, SDL_PROP_THREAD_CREATE_USERDATA_POINTER, data);
+    SDL_SetNumberProperty(p, SDL_PROP_THREAD_CREATE_STACKSIZE_NUMBER, RT_THREAD_STACK);
+    SDL_Thread *t = SDL_CreateThreadWithProperties(p);
+    SDL_DestroyProperties(p);
+    return t;
+}
+
 static int SDLCALL thread_main(void *arg) {
     GThread *t = (GThread *)arg;
     if (setjmp(t->top)) t->restart = 0; /* restarted: we were already signalled */
@@ -198,7 +212,7 @@ static uint32_t open_thread(CPU *c, uint32_t pc, uint32_t sp, uint32_t gp) {
             mem_w32(tcb + 0x94, (SR & ~0x3Fu) | 0x404);
         }
         if (!t->sem) t->sem = SDL_CreateSemaphore(0);
-        if (!t->th) t->th = SDL_CreateThread(thread_main, "guest", t);
+        if (!t->th) t->th = rt_create_thread(thread_main, "guest", t);
         else if (t->started) t->restart = 1; /* parked inside old guest code: re-enter at top */
         LOGV("bios: OpenThread %d pc=%08x sp=%08x", i, pc, sp);
         return 0xFF000000u | (uint32_t)i;

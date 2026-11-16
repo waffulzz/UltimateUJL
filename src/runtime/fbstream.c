@@ -14,7 +14,7 @@
 #include "recomp.h"
 #include <stdlib.h>
 
-void F_800476b4(CPU *c); /* libspu: byte address -> SPU address units (also stores the register) */
+#define SPU_ADDR_UNITS_FN 0x800476b4u /* libspu: byte address -> SPU address units (also stores the register) */
 
 #define CHECK_INSN_ADDR 0x8004e56cu
 #define CHECK_INSN      0x1440000bu /* bnez v0, +0xb */
@@ -31,7 +31,7 @@ void hle_spu_set_transfer_addr(CPU *c) {
     c->r[5] = addr;
     c->r[4] = (uint32_t)-1;
     c->r[31] = 0x8004e57cu;
-    F_800476b4(c);
+    call_indirect(c, SPU_ADDR_UNITS_FN); /* by address, so the runtime links against any generated code */
     c->r[29] += 24;
     c->r[31] = ra;
     mem_w16(SPU_XFER_ADDR, (uint16_t)c->r[2]);

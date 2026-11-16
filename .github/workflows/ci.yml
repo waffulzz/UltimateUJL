@@ -1,0 +1,151 @@
+# Build and test on Windows, Linux and macOS.
+#
+# The game itself is recompiled from the user's own disc, which CI doesn't have. Instead every job recompiles a
+# small synthetic PS-X EXE (tests/smoke/smoke.py) with the real generator, builds all targets against it with the
+# real runtime and frontend, then boots that test disc in the headless probe and checks guest RAM and the frame.
+# On Linux the OpenGL frontend also runs under Xvfb (Mesa llvmpipe) and its hardware-rendered frame is checked.
+# The binaries built here run only the test program; they are not uploaded.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (clang)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang ninja-build cmake python3 \
+            libgl-dev libegl-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+            libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev \
+            libdrm-dev libgbm-dev libasound2-dev libpulse-dev libudev-dev libdbus-1-dev \
+            xvfb mesa-utils libgl1-mesa-dri gdb
+      - name: Generate test code
+        run: python3 -I tests/smoke/smoke.py gen build/smoke
+      - name: Configure
+        run: >-
+          cmake -S . -B build/cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DRECOMP_DIR="$PWD/build/smoke/gen"
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build/cmake 2>&1 | tee build/build.log
+      - name: Report compiler errors
+        if: failure()
+        run: |
+          grep -E "error:|undefined reference|ld: " build/build.log | head -20 | sed 's/^/::error::/' || true
+      - name: Smoke test (probe)
+        run: python3 -I tests/smoke/smoke.py run build/cmake/ujl_probe build/smoke
+      - name: Smoke test (OpenGL frontend)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          SDL_VIDEO_DRIVER: x11
+        run: xvfb-run -a -s "-screen 0 1920x1080x24" python3 -I tests/smoke/smoke.py frontend build/cmake/ujl build/smoke
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-linux
+          path: |
+            build/smoke/*.log
+            build/smoke/run/build/shots/
+            build/cmake/shots/
+
+  macos:
+    name: macOS (Apple clang, arm64)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install packages
+        run: brew install ninja
+      - name: Generate test code
+        run: python3 -I tests/smoke/smoke.py gen build/smoke
+      - name: Configure
+        run: >-
+          cmake -S . -B build/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DRECOMP_DIR="$PWD/build/smoke/gen"
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build/cmake 2>&1 | tee build/build.log
+      - name: Report compiler errors
+        if: failure()
+        run: |
+          grep -E "error:|undefined reference|ld: " build/build.log | head -20 | sed 's/^/::error::/' || true
+      - name: Smoke test (probe)
+        run: python3 -I tests/smoke/smoke.py run build/cmake/ujl_probe build/smoke
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-macos
+          path: |
+            build/smoke/*.log
+            build/smoke/run/build/shots/
+
+  windows:
+    name: Windows (clang, MinGW UCRT)
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      # CLANG64 is the same toolchain family as llvm-mingw (clang + libc++ + mingw-w64 UCRT) used for releases
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja
+            mingw-w64-clang-x86_64-python
+      - name: Generate test code
+        run: python -I tests/smoke/smoke.py gen build/smoke
+      - name: Configure
+        run: >-
+          cmake -S . -B build/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DRECOMP_DIR="$(cygpath -m "$PWD")/build/smoke/gen"
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build/cmake 2>&1 | tee build/build.log
+      - name: Report compiler errors
+        if: failure()
+        run: |
+          grep -E "error:|undefined reference|ld: " build/build.log | head -20 | sed 's/^/::error::/' || true
+      - name: Smoke test (probe)
+        run: python -I tests/smoke/smoke.py run build/cmake/ujl_probe.exe build/smoke
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-windows
+          path: |
+            build/smoke/*.log
+            build/smoke/run/build/shots/
+
+  python-tools:
+    name: Python tools (syntax)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Byte-compile every script
+        run: python3 -m compileall -q tools tests
