@@ -292,6 +292,9 @@ const char *rt_current_overlay_name(void);
    whichever of the two is still held is masked until released, so a held answer can't turn into a
    note press. */
 extern uint32_t g_prompt_frame, g_gpu_frame;
+/* Port 2 has a pad while Autoplay is on, so 2P versus/co-op can be chosen and Autoplay plays player 2 there. */
+int rt_pad2_present(void) { extern int g_autoplay; return g_autoplay != 0; }
+
 uint16_t rt_pad_state(int port) {
     static int was_swapped[2];
     static uint16_t mask[2]; /* active-high bits forced released */
@@ -310,7 +313,9 @@ uint16_t rt_pad_state(int port) {
         uint16_t circle = (b >> 13) & 1, cross = (b >> 14) & 1;
         b = (uint16_t)((b & ~0x6000u) | cross << 13 | circle << 14);
     }
-    return (uint16_t)(b | mask[port]);
+    b = (uint16_t)(b | mask[port]);
+    { uint16_t autoplay_buttons(int port); b &= (uint16_t)~autoplay_buttons(port); }   /* autoplay.c */
+    return b;
 }
 
 static void pad_vblank_update(void) {
@@ -318,11 +323,11 @@ static void pad_vblank_update(void) {
     for (int p = 0; p < 2; p++) {
         if (!pad_buf[p]) continue;
         uint32_t b = pad_buf[p];
-        if (p == 0) {
+        if (p == 0 || rt_pad2_present()) {
             mem_w8(b + 0, 0x00);       /* ok */
             mem_w8(b + 1, 0x41);       /* digital pad, 1 halfword */
-            mem_w8(b + 2, rt_pad_state(0) & 0xFF);
-            mem_w8(b + 3, rt_pad_state(0) >> 8);
+            mem_w8(b + 2, rt_pad_state(p) & 0xFF);
+            mem_w8(b + 3, rt_pad_state(p) >> 8);
         } else {
             mem_w8(b + 0, 0xFF);       /* no controller */
         }

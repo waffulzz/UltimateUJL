@@ -182,6 +182,8 @@ void hook_credits_hold(CPU *c, uint32_t fn);
 void hook_morph_log(CPU *c, uint32_t fn);
 void hook_anim_log(CPU *c, uint32_t fn);
 void hook_tooltip_sprite(CPU *c, uint32_t fn);
+void hook_hiscore_insert(CPU *c, uint32_t fn);
+void hook_menu_screen(CPU *c, uint32_t fn);
 const char *rt_current_overlay_name(void);
 
 #define SAFEPOINT(c, a) do { (c)->pc = (a); if (--(c)->budget <= 0) rt_safepoint(c); } while (0)

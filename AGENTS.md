@@ -86,6 +86,11 @@ There's no unit test suite. Verification means running the game headless or scri
   - `PROBE_STACK_AT`, `PROBE_COPY`, `PROBE_FREEZE`, `PROBE_POKE`, `PROBE_VRAMDUMP_AT`, `PROBE_CARD=file.mcd`.
 
   Copy the probe to `ujl_probe_run.exe` before long runs so rebuilds aren't blocked.
+  Videos: `-wav -burst START N` writes every vblank to `build/shots/bNNNNN.bmp` (N = 10000 + vblank) and the audio of
+  the whole run to `build/shots/audio.wav`, on the same emulated clock (59.826 vblanks/s). Encode with ffmpeg
+  (ShareX ships one at `C:\Program Files\ShareX\ffmpeg.exe`): `-framerate 59.826 -start_number <10000+START*60>`, the
+  wav with `-ss <START*60/59.826>`, `-vf scale=640:480:flags=neighbor`. Keep files sent to the user under 30 MB
+  (crf ~29 for a 3-minute stage).
 - **Frontend scripts** (the real hardware renderer): `UJL_SCRIPT=file`, with lines
   `<sec> <button>|shot|burst N|overlay|quit` (`overlay` toggles the F1 settings window).
   Shots go to `build/cmake/shots/hw_vNNNNN.bmp`. Related variables: `UJL_SCRIPT_ASPECT` (0 4:3 … 3 21:9, 5 auto),
@@ -94,7 +99,8 @@ There's no unit test suite. Verification means running the game headless or scri
 - Runtime stats/A-B switches (all env vars): `UJL_CD_STATS`, `UJL_FLIP_STATS`, `UJL_GTE_STATS`, `UJL_SUBPIX_STATS`,
   `UJL_WAIT_STATS`, `UJL_FAST_LOAD`, `UJL_SOFT_RASTER`, `UJL_FORCE_RATING`, `UJL_FORCE_SCENE` (8,3 = staff roll from Stage 1), `UJL_NCLIP_INT` (integer-only backface test), and
   `UJL_JP_*` to disable each English patch. `UJL_FORCE_CENSORED=1` serves the USA (censored) Stages 1, 5 and 6
-  (`censor.c`; the setting "Uncensored content" is on by default because the JP release is uncensored). Setup wizard: `UJL_SETUP=1` forces it, `UJL_SETUP_SHOTS=1` saves each
+  (`censor.c`; the setting "Uncensored content" is on by default because the JP release is uncensored). `UJL_AUTOPLAY=1/2/3`
+  turns on Autoplay / Auto-COOL / Auto-FEVER (`autoplay.c`), `UJL_AUTOPLAY_LOG=1` logs its windows, presses and meter. Setup wizard: `UJL_SETUP=1` forces it, `UJL_SETUP_SHOTS=1` saves each
   page and quits, `UJL_SETUP_DROP="a;b"` drops files on it; scripted runs skip it and, once `setup_done=1` is in
   ujl.ini, use only the discs imported there. `UJL_FORCE_RATING=1` keeps a stage at GOOD (BAD distorts the picture).
   The game log is `build/cmake/ujl.log`.
@@ -122,7 +128,7 @@ There's no unit test suite. Verification means running the game headless or scri
 - `gte.c`: GTE, plus a recent-SXY cache and a RAM-address map that give the renderer 3D tagging and sub-pixel positions.
 - `gpu.c`: decodes GP0 into `GpuPrim`.
 - `memcard.c`, `sio.c`: memory card.
-- `fbstream.c`, `unlock.c`: game-specific HLE and hooks.
+- `fbstream.c`, `unlock.c`, `autoplay.c`, `censor.c`: game-specific HLE and hooks.
 
 **Rendering path.** `gpu.c` emits primitives to a backend. `gpu_soft.c` rasterizes into `g_vram`. `gpu_rec.c` records
 the stream for the frontend; while recording, the software raster is skipped, so `g_vram` lacks drawn pixels.

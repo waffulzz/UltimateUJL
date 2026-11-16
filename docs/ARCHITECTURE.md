@@ -37,9 +37,10 @@ vertices, widescreen up to 32:9 with the menus pillarboxed; movies stay native 4
 and Linux; CI runs a disc-free smoke test on all three.
 With the USA disc imported (first-run setup wizard, Settings > Discs): English title logo, menus, tooltips,
 memory card messages and credits song, plus the option to switch Stages 1, 5 and 6 to the censored USA versions
-("Uncensored content", on by default). Also: instant loading, unlock-all, confirm with Cross.
+("Uncensored content", on by default). Also: instant loading, unlock-all, confirm with Cross, Autoplay and
+Auto-COOL (watermarked, kept out of the high scores).
 Open: SPU noise, the credits-screen line (user report, not reproduced), the arcade (UJL NOW!) features, pause
-screen, autoplay; see To do.
+screen; see To do.
 Probe: `ujl_probe.exe -t SECS -shot -wav -press T:BTN ...` → build/shots/tNNN.bmp, audio.wav.
 
 Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build build/cmake`
@@ -348,6 +349,21 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   hold at ~136 s, fade at ~198 s, Stage Select at ~201 s.
 
 ## To do
+- **Replace the replay system with replay files (user request 2026-11-16)**: answering YES to the game's "save replay"
+  prompt opens a save-file dialog and writes the replay to a file anywhere on the computer/device (not the memory
+  card); "load replay" opens an open-file dialog and plays the chosen file. Behind a build/platform flag (and a
+  setting where it makes sense): some devices this port targets have no file browser or user-accessible file system,
+  and they keep the game's own memory-card replays. Needs: the replay data format and where the game builds it (the
+  replay save/load code in the menu overlay COMOD0.MEN), a host file-dialog hook (SDL_ShowSaveFileDialog /
+  SDL_ShowOpenFileDialog, async: the game waits on a flag), and feeding a loaded replay back where the card load would
+  have put it.
+- **Name every function we hook into or work with (user request 2026-11-15)**: give each one a real symbol instead of
+  F_xxxxxxxx / Onn_xxxxxxxx (e.g. F_8001e7a0 -> hiscore_insert, F_80018354 -> phrase_score, F_8001b8b0 ->
+  stage_frame, F_800169ac -> movie_next_frame, O02_801c66e0 -> stage1_pad_pressed, F_80017784 -> fever_ring_press,
+  F_800178b0 -> fever_check, F_8001cbf0 -> script_set_fever_table). Keep a symbol map
+  (address -> name, plus overlay for Onn_) that gen.py reads, emitting the name as the C function (with the address
+  in a comment) and an address alias for call_indirect; overrides_*.txt and the notes can then use names. Start with
+  everything the notes, hooks and overrides mention.
 - **Setup wizard (done, src/frontend/discs.cpp)**: ImGui pages Welcome -> Japanese disc -> optional discs -> summary,
   shown before boot on the first start (no `setup_done` in ujl.ini), whenever the JP image can't be found, or with
   UJL_SETUP=1; also Settings > Discs > "Manage discs..." in game (changes apply on restart). Never shown under
@@ -371,7 +387,80 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   English logo is available. Settings > Discs shows which discs were found; "Choose..." stores a USA image as
   ujl.ini usa_disc (checked before the auto-search, used from the next start).
 - High-res/widescreen/ultrawide GL renderer (FMV stays 4:3 native); texture modes (vectorized HQ / original).
-- Autoplay + Auto-COOL, both watermarking gameplay.
+- **Autoplay / Auto-COOL (done, src/runtime/autoplay.c; Settings > Game > Autoplay, not saved; UJL_AUTOPLAY=1/2,
+  UJL_AUTOPLAY_LOG=1)**: player 1's presses are injected into rt_pad_state, so the game's own pad driver and judge
+  see them. Found from the controller block (F_8002d580: 0x80078a20 +4 held, +6 pressed, +8 released; raw buffer
+  0x80078a68), then the rating meter's writer back to the judge:
+  - song time 0x80078af8; slot = time / 24 (F_8001b8b0). The logic runs every second vblank: it advances the time by
+    5-7 units, then reads the pad and stamps the press with the new time (F_8001b0a4 -> F_80017bc4, tick grid
+    0x801a2410, 396 ticks per player, 4 units per tick). So a press is made once time + 6 is within 3 of the slot.
+  - chart: 4-byte records {s16 slot, u8 id, u8 note count} sorted by slot, cursor 0x80071df0; ids 1-6 = Triangle,
+    Circle, Cross, Square, L1, R1 (0x8005b848). The records are the player's expected notes at the player's own
+    timing. Answer window 0x80071ccc..0x80071cce (32767 closed), scored when it closes (F_8001c214 -> F_800187e8 ->
+    F_80018354): +3 per press of a line button within ~8 units of a slot; -count if the first press isn't the first
+    note; penalties for other buttons and for pressing more/fewer than the note count (1.5 each); 0 unless every
+    line button was pressed; rhythm bonus F_800182a0 (pairs of slots: odd only / both / even only / empty, a group of
+    all four pays 48, table 0x8005b770/0x8005b774). Rating F_80018a08: score >= threshold (0x80071cda, ~40) cool,
+    > 0 good, else bad; meter 0x80071dc0.
+  - Autoplay presses the chart exactly: 3 per note, meter stays at 4 (GOOD; Stages 1 and 3 checked). Auto-COOL adds
+    presses chosen by a search over the window's slot pairs (rhythm_fill): each pair gets one of the four patterns
+    the chart allows, maximising the game's score (per-press points and penalties, -count once for a press before
+    the first note, 48 per complete group, the partial bonus) plus a musical weight per added press so it stays on
+    the beat: the chart's beat is 4 slots; beat +2, "and" +1, the 16th pickup -3, the 16th after a beat -3.5. In
+    COOL the teacher leaves and windows have no chart notes: the scorer's no-teacher path takes any button, so the
+    same search freestyles with all six buttons in turn (Stage 1: 185 beat, 34 "and", 186 16th presses; the 16ths
+    are the two per group the bonus needs). Stages 1, 3 and 7 reach COOL
+    and stay there (scores 70-240 per line); the COOL scenes play.
+  - Attract demo: 0x80071ddc == 1 (skipped). High scores: F_8001e7a0 inserts into the top-3 table (from 0x801a5348,
+    {name[8], u16 score}) after the name entry; hook_hiscore_insert zeroes its score argument (sp+16) for a song
+    played with either on at any point, so nothing is inserted (checked: table unchanged, 3386 dropped).
+  - Auto-FEVER (mode 3): Auto-COOL until COOL, then the stage's fever codes. In a COOL window the stage script's
+    opcode handler F_8001cbf0 copies a fever table pointer from the stage's list into player 1's block +92
+    (0x80071d14; 0 outside COOL windows). Six 32-byte records (one per fever colour; Stage 1: COMOD11.SNG file
+    0x143ac): {u16 1, u16 100, u16 30, s16 -15, s16 -50, u8 code[8] (0xF0 | button id, 0 = rest), u8 0xFF[8], u16 0,
+    u32 next} - the rows the loading screen shows with Unlock all. F_80017784 files each on-time press under
+    floor(time / 24) in a 32-slot ring (block +57) and resets the ring on a press outside tick 1-4; F_800178b0
+    compares the last 8 slots with each code at every slot boundary and on a match sets fever bit k (block +55),
+    a 4-phrase timer (block +90) and resets the ring. So a fever press must be stamped in [slot*24, slot*24 + 7]:
+    the press goes on the logic frame whose predicted stamp (the time steps alternate ~7/5, next ~ 12 - last) is
+    closest to slot*24 + 2. Codes are played back to back from the window's second beat (a code on the first slot
+    missed), a beat of rest before a code that starts with a press (the post-match reset ate it), the fevers not yet
+    running first so a miss is retried. Stage 1: all six stack in the first COOL section; in the second a code can
+    miss on a jump of the song clock (CD timing, e.g. +31 units at slot 711) with no window left to retry.
+  - Players and 2P: each player has its own plan, timing and fever state. Player p's block is 0x80071cb8 + 96p;
+    +48 is its input source (F_8001b0a4: 0/1 controller port, 2-4 the game's COM player, 5 nobody). Autoplay drives
+    only players on a controller port, on that port; COM partners/opponents and both players of the attract demo
+    (source 3) are left alone. Port 2 reports a pad while Autoplay is on (bios.c rt_pad2_present, sio.c), so 2P
+    versus/co-op can be chosen. Mode 0x80078aec: 0 solo, 1 versus (a meter per player, 0x80071dc0 + 10p), 2 co-op
+    (one meter). The chart (cursor 0x80071df0) is shared by both players. (0x80071ddc, first taken for a demo flag, is
+    also 1 in versus: not used.)
+  - Lines (line_plan): the scorer needs the first press to be the line's first note, every line button pressed once,
+    the right press count; individual chart notes are optional. Dense co-op lines (every slot a note) leave no room
+    for "empty"/"odd only" pairs, so Auto-COOL may leave notes out or move them: the search keeps the first note, never
+    presses before it, tracks the press count, and covers the whole window (pairs before the first note count as
+    empty). A window is scored as its last slot starts, so nothing is planned on that slot. (The older fill pressed
+    the first button one slot early on dense lines: an audible wrong note in 2P.)
+  - At COOL the scorer's "teacher" argument is the rating (F_80019320 -> F_80019528: player struct +2), and rating 0
+    takes the no-teacher path: any button counts. PaRappa mode and versus keep giving lines during COOL, so
+    Auto-FEVER enters fever codes in any window where the player is COOL and has a fever table, not just empty ones.
+  - Checked (probe; 2P by poking player 2's source to 1 and the active mask 0x80071db8 to 3 after load): Stage 1
+    Autoplay GOOD, Auto-COOL COOL after two lines (57-243 per line), Auto-FEVER all six fevers from slot 363 to the end
+    of the song (also in the real frontend); Stage 3 solo Lammy and PaRappa Auto-COOL; PaRappa solo Autoplay GOOD and
+    Auto-FEVER all six; Lammy and PaRappa co-op both players to COOL; versus both players to COOL, player 1 fevers.
+    Real 2P through the menus (Stage Select: stage, "Team" row, Second Player Select: MANUAL Controller 2 / AUTO =
+    COM / MANUAL Controller 1): in co-op the players take turns (the active mask 0x80071db8 marks whose turn), and the
+    game stamps presses at about the decision time, where solo stamped them ~6 units later. A fixed prediction filed
+    2P fever presses a slot early (notes still scored, fevers failed). Press timing now calibrates itself: after each
+    press it finds the recorded stamp in the player's tick grid (0x801a2410 + 396p) and keeps a running correction
+    (settles near -3 solo, -4 in 2P co-op). Each fever colour goes to one player, so with both players autoplayed the
+    codes are split: player 1 Triangle/Cross/L1, player 2 Circle/Square/R1 (counted by input source, not the active
+    bit, which alternates in co-op). Stage 3 real 2P co-op: each player got its three fevers.
+  - After an autoplayed song the system-save and replay-save screens are skipped (hook_menu_screen, pre-hook on the
+    menu overlay's screen dispatcher O00_801c99c4: the screen loop O00_801c5f44 calls it with the screen number and
+    it returns the next). Screens: 10 name entry, 30 a step after it, 27 SYSTEM SAVE, 28 REPLAY SAVE, 31/29 replay,
+    3 candy-bar main menu, 12/4 Stage Select, 35 stage start. 27/28/29/31 become 3 while armed (armed when the song
+    ends, disarmed at the main menu, so Load & Save from the candy bars still works). Name entry still shows (the
+    high-score insert is already blocked).
 - **Uncensored content toggle (done, src/runtime/censor.c)**: the JP release is the uncensored one, so the setting
   defaults to on; off (needs the USA disc) serves the USA versions of Stages 1, 5 and 6 through the sector patch
   layer, applied from the next stage loaded (ini `uncensored`, UJL_FORCE_CENSORED=1 in the probe). Disc comparison

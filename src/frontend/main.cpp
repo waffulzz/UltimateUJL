@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <cmath>
+#include <cfloat>
 #include <string>
 #include <algorithm>
 #include <vector>
@@ -38,6 +39,8 @@ const char *memcard_path(int slot);
 extern int g_unlock_all;
 extern int g_uncensored;                  // censor.c: 1 = JP (uncensored) content, 0 = the USA disc's Stages 1/5/6
 int censor_available(void);               // censor.c: the USA disc is there to switch to
+extern int g_autoplay;                    // autoplay.c: 0 off, 1 Autoplay, 2 Auto-COOL, 3 Auto-FEVER
+int autoplay_active(void);                // autoplay.c: playing the current song (watermark)
 extern "C" SDL_Thread *rt_create_thread(SDL_ThreadFunction fn, const char *name, void *data); // bios.c: big-stack thread
 extern "C" int g_cd_fast_load;            // cdrom.c: fast data loading + loading turbo (setting "fast_load")
 extern "C" int rt_load_turbo_active(void); // cpu.c: the emulation is fast-forwarding through a load
@@ -858,6 +861,17 @@ int main(int argc, char **argv) {
                         ImGui::EndTooltip();
                     }
                 }
+                // Autoplay: plays player 1's part through the controller (runtime autoplay.c); not saved, off at start
+                ImGui::Combo("Autoplay", &g_autoplay, "Off\0Autoplay (follows the chart, GOOD)\0Auto-COOL (freestyles to COOL)\0Auto-FEVER (COOL, then fever codes)\0");
+                if (ImGui::BeginItemTooltip()) {
+                    ImGui::TextUnformatted("Autoplay plays each line exactly as the teacher does, which keeps the rating at GOOD.\n"
+                                           "Auto-COOL adds its own rhythm to every line to reach COOL, then freestyles\n"
+                                           "through COOL mode. Auto-FEVER plays like Auto-COOL, then enters the stage's\n"
+                                           "fever codes in COOL mode (all six in turn, so the fevers stack).\n"
+                                           "A watermark shows while either plays. A song played with either on, even for\n"
+                                           "part of it, doesn't enter the high-score table. Off every time the game starts.");
+                    ImGui::EndTooltip();
+                }
             }
             ImGui::SeparatorText("Discs");
             {
@@ -912,11 +926,6 @@ int main(int argc, char **argv) {
                 if (g_card_pick.exchange(0)) memcard_request_import(g_card_pick_path.c_str(), g_card_import_mode);
                 if (const char *r = memcard_import_result()) ImGui::TextWrapped("%s", r);
             }
-            ImGui::BeginDisabled();
-            bool off = false;
-            ImGui::Checkbox("Autoplay (soon, watermarks gameplay)", &off);
-            ImGui::Checkbox("Auto-COOL (soon, watermarks gameplay)", &off);
-            ImGui::EndDisabled();
             ImGui::SeparatorText("Controllers");
             {
                 bool cc = g_confirm_cross != 0;
@@ -955,6 +964,16 @@ int main(int argc, char **argv) {
             ImGui::Begin("VRAM (F2)", &g_show_vram);
             ImGui::Image((ImTextureID)(intptr_t)tex_vram, ImVec2(1024, 512));
             ImGui::End();
+        }
+        if (autoplay_active()) {   // watermark over the game picture's bottom-right corner while Autoplay plays
+            const char *wm = g_autoplay == 3 ? "AUTO-FEVER" : g_autoplay == 2 ? "AUTO-COOL" : "AUTOPLAY";
+            float fs = std::max(16.0f, h / 22.0f);
+            ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, wm);
+            ImVec2 at(p0.x + w - sz.x - fs * 0.6f, p0.y + h - sz.y - fs * 0.5f);
+            ImDrawList *dl = ImGui::GetForegroundDrawList();
+            dl->AddRectFilled(ImVec2(at.x - fs * 0.3f, at.y - fs * 0.15f), ImVec2(at.x + sz.x + fs * 0.3f, at.y + sz.y + fs * 0.15f),
+                              IM_COL32(0, 0, 0, 110), fs * 0.25f);
+            dl->AddText(ImGui::GetFont(), fs, at, IM_COL32(255, 255, 255, 190), wm);
         }
         if (g_set.show_fps)
             ImGui::GetForegroundDrawList()->AddText(ImVec2(8, 8), 0xFF00FF00, (std::to_string((int)(ui_fps + 0.5f)) + " fps  (" + std::to_string((int)(emu_fps + 0.5f)) + " vblank/s)").c_str());

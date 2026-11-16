@@ -41,6 +41,7 @@ set(RUNTIME_SOURCES
   src/runtime/disc.c
   src/runtime/patch.c
   src/runtime/censor.c
+  src/runtime/autoplay.c
   src/runtime/language.c
   src/runtime/title_logo.c src/runtime/button_swap.c
   src/runtime/spu.c

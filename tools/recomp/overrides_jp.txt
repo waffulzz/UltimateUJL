@@ -16,3 +16,7 @@
 801cbc4c@COMOD0.MEN  hook_tooltip_sprite
 # English credits song: hold the JP staff roll's end cue until the longer US song has finished (src/runtime/patch.c).
 801c624c@COMOD8.SNG  hook_credits_hold
+# Autoplay/Auto-COOL: a song played with either on doesn't enter the high-score table (src/runtime/autoplay.c).
+8001e7a0  hook_hiscore_insert
+# Autoplay: after an autoplayed song, skip the system-save and replay-save screens (src/runtime/autoplay.c).
+801c99c4@COMOD0.MEN  hook_menu_screen

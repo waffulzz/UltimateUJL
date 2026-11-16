@@ -117,7 +117,7 @@ static void tx(uint8_t v) {
     if (!(ctrl & 2)) { rx = 0xFF; rx_full = 1; return; } /* /JOY not selected */
     if (dev == DEV_NONE) {
         step = 0;
-        if (v == 0x01 && port == 0) { dev = DEV_PAD; g_sio_pad_polls++; }
+        if (v == 0x01 && (port == 0 || rt_pad2_present())) { dev = DEV_PAD; g_sio_pad_polls++; }
         else if (v == 0x81 && g_card_present[port]) { dev = DEV_CARD; card_slot = port; }
     }
     if (dev == DEV_PAD) r = pad_byte(port, v, &ack);

@@ -77,7 +77,8 @@ uint32_t sio_read(uint32_t off, int size);
 void sio_write(uint32_t off, uint32_t v, int size);
 extern uint16_t g_pad_buttons[2]; /* active-low PS1 button bits */
 extern int g_confirm_cross;       /* 1: swap Circle/Cross in menus (Western confirm) */
-uint16_t rt_pad_state(int port);  /* g_pad_buttons with menu remaps applied */
+uint16_t rt_pad_state(int port);
+int rt_pad2_present(void);       /* bios.c: a pad in port 2 (while Autoplay is on) */  /* g_pad_buttons with menu remaps applied */
 
 /* ---------- BIOS HLE ---------- */
 void bios_init(CPU *c);
