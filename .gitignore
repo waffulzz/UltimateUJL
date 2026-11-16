@@ -8,6 +8,7 @@
 *.chd
 *.7z
 *.zip
+*.ipa
 *.mcd
 /extracted/
 /readme.html

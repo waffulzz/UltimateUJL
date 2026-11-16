@@ -16,6 +16,7 @@ extern "C" {
 #include <vector>
 #include <string>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <algorithm>
 #include <cmath>
@@ -1121,6 +1122,17 @@ void do_copy(const RecCopy *c) {
     if (region_rendered(c->sx, c->sy, c->sx + w - 1, c->sy + h - 1)) mark_rendered(c->dx, c->dy, c->dx + w - 1, c->dy + h - 1, true);
 }
 
+// UJL_GL_CHECK=1: glGetError after every replayed command, naming the step (finds which one a GL error at the end
+// of hw_replay came from; a new GL, e.g. ES on iOS, is stricter than desktop GL in places)
+void gl_check(const char *where) {
+    static int on = -1;
+    if (on < 0) on = getenv("UJL_GL_CHECK") != nullptr;
+    if (!on) return;
+    static int n;
+    for (GLenum e; (e = glGetError()) != GL_NO_ERROR;)
+        if (n++ < 40) fprintf(stderr, "hw: GL error 0x%x after %s (frame %u)\n", e, where, frame_no);
+}
+
 struct GlState {
     GLint fbo, prog, vao, tex, viewport[4], scissor_box[4];
     GLboolean blend, scissor;
@@ -1148,15 +1160,31 @@ void restore_state(const GlState &s) {
 
 } // namespace
 
+// OpenGL ES 3.0 (iOS) takes the same shaders as GLSL ES 3.00: explicit default precisions, and no
+// `noperspective` (not in ES 3.0). Every vertex has w = 1, so perspective-correct interpolation is the same thing.
+static bool g_gles;
+static std::string glsl(const char *src) {
+    std::string s = src;
+    if (!g_gles) return s;
+    s.replace(0, strlen("#version 330 core"),
+              "#version 300 es\nprecision highp float;\nprecision highp int;\nprecision highp sampler2D;");
+    for (size_t p; (p = s.find("noperspective ")) != std::string::npos;) s.erase(p, strlen("noperspective "));
+    return s;
+}
+
 bool hw_init(int scale, int samples) {
     S = std::max(1, std::min(scale, 8));
     want_ns = std::max(1, samples);
     GLint major = 3;
     glGetIntegerv(0x821B /* GL_MAJOR_VERSION */, &major);
-    have_sample_mask = major >= 4;
-    std::string fs = k_fs;
+    const char *ver = (const char *)glGetString(GL_VERSION);
+    g_gles = ver && !strncmp(ver, "OpenGL ES", 9);
+    have_sample_mask = major >= 4 && !g_gles;
+    GLint prev_fbo = 0;   // the window's framebuffer (not 0 on iOS, where UIKit's view owns one)
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+    std::string fs = glsl(k_fs);
     if (have_sample_mask) fs.replace(0, strlen("#version 330 core"), "#version 400 core\n#define HAVE_SAMPLE_MASK 1");
-    prog_draw = link(k_vs, fs.c_str());
+    prog_draw = link(glsl(k_vs).c_str(), fs.c_str());
     u_draw_vram = GLF(GetUniformLocation)(prog_draw, "u_vram");
     u_draw_scale = GLF(GetUniformLocation)(prog_draw, "u_scale");
     u_draw_smooth = GLF(GetUniformLocation)(prog_draw, "u_smooth");
@@ -1164,7 +1192,7 @@ bool hw_init(int scale, int samples) {
     u_draw_samples = GLF(GetUniformLocation)(prog_draw, "u_samples");
     u_draw_size = GLF(GetUniformLocation)(prog_draw, "u_size");
     u_draw_wide = GLF(GetUniformLocation)(prog_draw, "u_wide");
-    prog_copy = link(k_copy_vs, k_copy_fs);
+    prog_copy = link(glsl(k_copy_vs).c_str(), glsl(k_copy_fs).c_str());
     u_copy_src = GLF(GetUniformLocation)(prog_copy, "u_src");
     u_copy_off = GLF(GetUniformLocation)(prog_copy, "u_off");
     u_copy_div = GLF(GetUniformLocation)(prog_copy, "u_div");
@@ -1194,8 +1222,8 @@ bool hw_init(int scale, int samples) {
     stage_w = 1024; stage_h = 512;
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, stage_w, stage_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     alloc_targets();
-    GLF(BindFramebuffer)(GL_FRAMEBUFFER, 0);
-    fprintf(stderr, "hw: renderer ready at %dx (%dx%d), GL %d\n", S, 1024 * S, 512 * S, (int)major);
+    GLF(BindFramebuffer)(GL_FRAMEBUFFER, (GLuint)prev_fbo);
+    fprintf(stderr, "hw: renderer ready at %dx (%dx%d), %s\n", S, 1024 * S, 512 * S, ver ? ver : "GL ?");
     return true;
 }
 
@@ -1264,18 +1292,20 @@ bool hw_view(const GpuDisplay &d, HwView *v) {
 bool hw_replay(const uint8_t *data, size_t len, GpuDisplay *disp) {
     if (!len) return false;
     uint64_t t0 = SDL_GetPerformanceCounter();
+    gl_check("(left over from before this replay)");
     GlState st;
     save_state(st);
+    gl_check("save_state");
     bool frame = false;
     size_t off = 0;
     while (off + sizeof(RecHdr) <= len) {
         const RecHdr *h = (const RecHdr *)(data + off);
         const void *payload = h + 1;
         switch (h->type) {
-        case REC_PRIM: draw_prim((const GpuPrim *)payload); break;
-        case REC_UPLOAD: do_upload((const RecRect *)payload); break;
-        case REC_FILL: do_fill((const RecFill *)payload); break;
-        case REC_COPY: do_copy((const RecCopy *)payload); break;
+        case REC_PRIM: draw_prim((const GpuPrim *)payload); gl_check("prim"); break;
+        case REC_UPLOAD: do_upload((const RecRect *)payload); gl_check("upload"); break;
+        case REC_FILL: do_fill((const RecFill *)payload); gl_check("fill"); break;
+        case REC_COPY: do_copy((const RecCopy *)payload); gl_check("copy"); break;
         case REC_FRAME:
             memcpy(disp, payload, sizeof(GpuDisplay));
             frame = true;
@@ -1299,7 +1329,9 @@ bool hw_replay(const uint8_t *data, size_t len, GpuDisplay *disp) {
         off += sizeof(RecHdr) + h->size;
     }
     flush();
+    gl_check("flush");
     resolve_display();
+    gl_check("resolve");
     st_replays++;
     st_replay_ms += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
     for (GLenum e; (e = glGetError()) != GL_NO_ERROR;) { if (st_glerr++ < 20) fprintf(stderr, "hw: GL error 0x%x\n", e); }

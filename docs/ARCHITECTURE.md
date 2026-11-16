@@ -372,6 +372,105 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   song's last channel-7 sector: the cue is one-shot, and left alone the CD streams on into the next file. Probe:
   hold at ~136 s, fade at ~198 s, Stage Select at ~201 s.
 
+## iOS / iPadOS (2026-11-16)
+- **Build**: CMake's own iOS support (`-DCMAKE_SYSTEM_NAME=iOS`, sysroot `iphonesimulator` or `iphoneos`, arm64,
+  deployment target 15.0) with Ninja, the same clang flags and the same `build/gen_jp`; see AGENTS.md. Only `ujl`
+  is built there (`UJL_IOS` in CMakeLists.txt): a `MACOSX_BUNDLE` named `UltimateUJL.app`, Info.plist from
+  `assets/ios/Info.plist.in`, the home screen icon copied from `assets/icon/ujl_256.png`, bundle id in the cache
+  variable `UJL_IOS_BUNDLE_ID`. With Ninja a post-build step signs the bundle (`UJL_IOS_SIGN_IDENTITY`, default
+  ad hoc `-`, which is all the simulator needs). For a phone, either pass a real identity plus a provisioning
+  profile, or generate an Xcode project (`-G Xcode -DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=...`) and run it from
+  Xcode. `tools/build_ios.sh` builds, installs on the booted simulator and clones disc images into it;
+  `--ipa` builds for devices with `UJL_IOS_SIGN_IDENTITY` empty (no signing step), strips the linker's own ad hoc
+  signature and zips `Payload/UltimateUJL.app` into an unsigned IPA for sideloading tools (AltStore, Sideloadly)
+  that sign it with the user's Apple ID. The Info.plist template carries MinimumOSVersion, UIDeviceFamily and
+  CFBundleSupportedPlatforms, which Xcode adds itself and a device checks on install. CI builds
+  both SDKs against the smoke test code (job `ios`, compile and link only).
+- **Renderer: OpenGL ES 3.0, not Metal.** UIKit still has OpenGL ES 3.0 (deprecated since iOS 12, still in the
+  iOS 27 SDK and the simulator), and SDL creates the EAGL context. `hw_renderer.cpp` needed only its shaders
+  changed: `glsl()` rewrites `#version 330 core` to `#version 300 es` with highp default precisions, and drops
+  `noperspective` (not in GLSL ES 3.00; every vertex has w = 1, so it changes nothing). Everything else it uses
+  is in ES 3.0: texelFetch, integer attributes, MSAA renderbuffers + glBlitFramebuffer resolves, alpha swizzle,
+  constant-color blending. No GL 4 sample masks there, so sprite-edge AA is off (polygon MSAA works).
+  `gl_funcs.h` takes the OpenGLES headers and SDL_GL_GetProcAddress still finds every entry point. ImGui uses its
+  ES3 backend (`IMGUI_IMPL_OPENGL_ES3`, `#version 300 es`). A Metal backend would be a rewrite of the renderer for
+  no gain while Apple keeps GLES; revisit if it is removed.
+- **The window framebuffer isn't 0 on iOS**: UIKit's view owns a framebuffer object, which SDL reports as
+  `SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER`. `hw_init` used to finish with `glBindFramebuffer(0)`, which
+  draws nowhere there: it now restores whatever was bound, and `main.cpp` binds the window's framebuffer
+  (`bind_window_fb`) before drawing the frame. It also rebinds the view's *renderbuffer*
+  (`..._OPENGL_RENDERBUFFER_NUMBER`): SDL's UIKit swap presents whatever renderbuffer is bound, and the renderer
+  leaves its MSAA renderbuffer bound, so every present failed with GL_INVALID_OPERATION (0x502, logged as "hw: GL
+  error" at the next replay) until it did.
+- **`UJL_GL_CHECK=1`** (hw_renderer.cpp `gl_check`, main.cpp `gl_check_main`): glGetError after every replayed
+  command and every step of the frame loop, naming the step. That is how the swap above was found: the error was
+  already pending when a replay started. In the simulator pass env vars as `SIMCTL_CHILD_UJL_GL_CHECK=1 xcrun
+  simctl launch booted io.github.waffulzz.UltimateUJL`. `UJL_TOUCH_LOG=1` logs every finger down/up.
+- **The iOS Simulator's OpenGL ES is a CPU rasterizer** (`GLRendererFloat` in a `sample` of the process): fine for
+  checking that things work, useless for judging speed. Cutscenes ran at 25-35 UI fps at 1x, the front-end menus
+  at ~1 fps with smoothed textures and 4x MSAA. In the simulator only (`TARGET_OS_SIMULATOR`), Auto resolution
+  stops at 1x and textures/AA default to Original/off; the settings still change them. A real device renders on its
+  GPU at the normal defaults (Auto up to 2x, Smooth, 4x MSAA). Not yet measured on a phone.
+- **A UI slower than 250 ms per frame flickered** between the picture and bare backgrounds (seen on the title
+  screen in the simulator, would happen on any very slow GPU). `gpu_rec_vblank` drops the backlog when the UI
+  falls 6 frames behind and restarts from a full VRAM upload, but with the hardware renderer recording, the
+  software raster is off and `g_vram` has no drawn pixels: every restart showed the backgrounds alone. Now the
+  first drop turns the software raster back on for good (`soft_forced`, logged "gpu_rec: the renderer fell
+  behind") and the restart waits 3 vblanks for g_vram to hold a whole drawn frame (`resync_defer`). Desktop GPUs
+  that keep up never take this path.
+- **Files**: the bundle is read-only, so `platform_data_dir()` (`platform.h`, `platform_ios.mm`) is the app's
+  Documents folder and replaces the exe folder (`g_base_dir`): ujl.ini, ujl.log, ujl_imgui.ini, ujl_card1.mcd,
+  shots. Info.plist sets `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace`, so that folder is "On My
+  iPhone > Ultimate UJL" in the Files app and shows in Finder's file sharing: disc images are copied in there, and
+  the disc search and setup wizard look only there (and in Documents/Inbox), never in parent folders. SDL has no
+  file dialog on iOS, so `platform_open_file_dialog` presents `UIDocumentPickerViewController` (any file type,
+  `asCopy`, several files at once) and moves the copies into Documents before calling back; the wizard queues
+  picks and handles a `.cue` after its data file. **The container moves**: reinstalling (or updating) the app gives
+  its data container a new UUID, so the absolute disc path in ujl.ini pointed nowhere and the wizard came back.
+  Paths inside Documents are stored relative to it (`disc_path_to_ini` / `disc_path_from_ini`, discs.cpp), and an
+  absolute path into an older container's Documents is remapped to the same file in the current one. The wizard's Japanese-disc page has a "Look again" button for
+  images copied in with the Files app while it is open. Folder picking (UJL NOW! ROM folder) is hidden there: a
+  folder outside the sandbox is only readable through a security scope. Not handled: "Open in Ultimate UJL" from
+  another app sends a path SDL can't keep access to (SDL drops the security-scoped URL); use Files or the picker.
+- **Lifecycle**: in the background GL calls kill the process, so on `SDL_EVENT_WILL_ENTER_BACKGROUND` the frontend
+  writes the memory card out and stops replaying and presenting until `DID_ENTER_FOREGROUND`. The game thread then
+  blocks in `gpu_rec_vblank` waiting for the replay, which pauses the game. Landscape only (Info.plist and
+  `SDL_HINT_ORIENTATIONS`), full screen, the home indicator dimmed (first swipe doesn't leave the game).
+- **Threads**: recompiled code only runs on threads from `rt_create_thread` (the game thread and guest threads),
+  which ask SDL for an 8 MB stack. SDL's pthread backend honours that on iOS too (secondary threads default to
+  512 KB there as on macOS). `rt_boot` on the main thread only loads the executable, no guest code.
+- **Touch controller** (`touch_pad.cpp`): a PS1 pad drawn with ImGui's foreground draw list: d-pad (8-way, a finger
+  past cos 67.5 degrees on an axis presses it, so diagonals press two), Triangle/Circle/Cross/Square in the
+  PlayStation colours (nearest button within reach), L1/L2/R1/R2, Select, Start, and a menu button that toggles
+  the settings window (iOS has no F1/Esc). It reads SDL finger events itself (multi-touch, sliding moves the
+  press) and its bits are OR-ed into `g_input_buttons` with the controllers and keyboard. Setting "Touch controls"
+  (ujl.ini `touch_controls`): 0 Auto, shown while no controller is connected (SDL gamepad added/removed events
+  keep `g_pads` current, checked every frame), 1 Always, 2 Never; the default is Auto on iOS and Never on desktop.
+  With a controller connected a touch brings up the menu button alone for 5 s. The pad and the menu button are
+  hidden while the settings or the disc wizard are open (the window's close button closes them). A press is
+  latched until the frame loop has read it once (`g_latched`), so a tap shorter than one UI frame still reaches
+  the game. The Simulator passes the Mac's paired controllers through to iOS (one showed up as "Gamepad"), so
+  there Auto correctly keeps the pad hidden; set Touch controls to Always to see it.
+- **ImGui on a touch screen**: the SDL3 backend takes the pointer position only from motion events, and a tap's
+  press arrived before any motion to the new spot, so every tap clicked where the previous one had been (and the
+  first clicked nothing). `imgui_process_event` (main.cpp) feeds the press position first. ImGui doesn't scroll
+  by dragging content, so `touchpad_drag_scroll()` (called inside the settings window and the wizard page)
+  scrolls on a vertical drag, cancelling the press of whatever button the drag started on. The wizard and the
+  settings window are fitted to `SDL_GetWindowSafeArea` (the Dynamic Island covered their left edge). Layout: two columns at the safe area's sides (width 0.36 x safe height,
+  96-190 pt); the game picture is fitted into the space between them (`touchpad_fit`), and Auto aspect uses that
+  space's aspect instead of the window's, so on a phone the picture stays 4:3 in the pillarbox gap and the buttons
+  never cover it. Where that gap would make the picture smaller than 80% of the screen height (iPad, a forced wide
+  aspect) the picture is drawn bigger, under the translucent buttons. ImGui is scaled 1.5x (1.35x font) with a
+  26 pt scrollbar, and windows move only by their title bar, so touch can drive the settings and wizard.
+- **Auto resolution** stops at 2x on iOS (a 2048x1024 VRAM target); higher scales are explicit choices.
+- **Verified in the iOS 27.2 Simulator (iPhone 18 Pro), 2026-11-16**: first-run wizard driven by touch (it found
+  the JP image in Documents), boot from the JP disc, intro, title, attract demo, and the front-end menus at 60
+  vblank/s; the touch pad's START, d-pad and Circle drive the title and candy-bar menus; the menu button opens the
+  settings, where Touch controls switches the pad; zero GL errors. Not verified: a physical device (signing,
+  speed), the document picker (needs Files content in the simulator), the pad reappearing when a controller
+  disconnects (the Mac's controller was passed through the whole time; the Auto check runs every frame from
+  SDL's gamepad list), backgrounding.
+
 ## To do
 - **Replace the replay system with replay files (user request 2026-11-16)**: answering YES to the game's "save replay"
   prompt opens a save-file dialog and writes the replay to a file anywhere on the computer/device (not the memory

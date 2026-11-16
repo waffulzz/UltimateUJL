@@ -56,10 +56,12 @@ uint64_t g_soft_ns; /* host time in the software rasterizer (UJL_CD_STATS) */
    a 3-vblank frame about once a second in Stage 1, seen as the crowd's bobbing snapping back. g_vram still gets
    uploads, fills and copies (gpu.c); only drawn pixels are missing, and UJL never reads VRAM back to the CPU
    (gpu.c logs it if that ever happens). UJL_SOFT_RASTER=1 keeps the software copy. */
+static int soft_forced;     /* the UI fell behind once: keep the software copy from then on (see gpu_rec_vblank) */
+static int resync_defer;    /* vblanks left before that first resync */
 static int soft_raster_on(void) {
     static int keep_soft = -1;
     if (keep_soft < 0) keep_soft = getenv("UJL_SOFT_RASTER") != NULL;
-    return keep_soft;
+    return keep_soft || soft_forced;
 }
 static void rec_prim(const GpuPrim *p) {
     if (!recording || soft_raster_on()) {
@@ -97,6 +99,10 @@ void gpu_rec_request_resync(void) { SDL_SetAtomicInt(&want_resync, 1); }
 
 void gpu_rec_vblank(void) {
     if (!mtx) return;
+    if (resync_defer > 0) {   /* not recording: the software raster is filling g_vram with a whole drawn frame */
+        if (--resync_defer > 0) return;
+        SDL_SetAtomicInt(&want_resync, 1);
+    }
     int on = SDL_GetAtomicInt(&want_on);
     if (on && (!recording || SDL_GetAtomicInt(&want_resync))) {
         recording = 1;
@@ -123,12 +129,22 @@ void gpu_rec_vblank(void) {
         }
     }
     /* The UI thread fell behind. Replaying a growing backlog only makes each replay slower (and the backlog
-       bigger), so drop it and restart from a full VRAM copy at the next vblank: a stutter, not a spiral. */
+       bigger), so drop it and restart from a full VRAM copy: a stutter, not a spiral. That copy is only right if
+       g_vram has the drawn pixels, so the first time this happens the software raster comes back on for good, and
+       the restart waits 3 vblanks for it to draw a whole frame. Without that, a UI slower than 250 ms per frame
+       (the iOS Simulator's CPU-only OpenGL ES in the menus) restarted from bare backgrounds every frame and the
+       picture flickered between the menu and its empty background. */
     if (pending_frames >= 6 || pending.len > (64u << 20)) {
         pending.len = 0;
         pending_frames = 0;
-        SDL_SetAtomicInt(&want_resync, 1);
         g_gpu_rec_drops++;
+        if (!soft_raster_on()) {
+            soft_forced = 1;
+            recording = 0;
+            resync_defer = 3;
+            rt_log("gpu_rec: the renderer fell behind; keeping a software copy of VRAM from now on");
+        } else
+            SDL_SetAtomicInt(&want_resync, 1);
     }
     buf_append(&pending, &rec);
     pending_frames++;

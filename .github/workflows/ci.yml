@@ -97,6 +97,44 @@ jobs:
             build/smoke/*.log
             build/smoke/run/build/shots/
 
+  # iOS: compile and link the app bundle (OpenGL ES renderer, touch controller, document picker) against the same
+  # test code, for the simulator and for devices. Nothing runs: CI has no simulator session to drive. The device
+  # bundle is signed ad hoc, which builds but doesn't install; real installs use the Xcode generator and a team.
+  ios:
+    name: iOS (${{ matrix.sdk }}, compile only)
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [iphonesimulator, iphoneos]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install packages
+        run: brew install ninja
+      - name: Generate test code
+        run: python3 -I tests/smoke/smoke.py gen build/smoke
+      - name: Configure
+        run: >-
+          cmake -S . -B build/ios -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=${{ matrix.sdk }} -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DRECOMP_DIR="$PWD/build/smoke/gen"
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build/ios 2>&1 | tee build/build.log
+      - name: Report compiler errors
+        if: failure()
+        run: |
+          grep -E "error:|undefined reference|ld: " build/build.log | head -20 | sed 's/^/::error::/' || true
+      - name: Check the bundle
+        run: |
+          test -x build/ios/UltimateUJL.app/UltimateUJL
+          plutil -lint build/ios/UltimateUJL.app/Info.plist
+          codesign --verify build/ios/UltimateUJL.app
+
   windows:
     name: Windows (clang, MinGW UCRT)
     runs-on: windows-2025

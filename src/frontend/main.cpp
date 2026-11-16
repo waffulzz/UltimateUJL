@@ -1,7 +1,6 @@
 // Ultimate Um Jammer Lammy (UltimateUJL) frontend: SDL3 window, input, ImGui overlay. The recompiled game runs on its own thread.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
-#include <SDL3/SDL_opengl.h>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -19,6 +18,8 @@
 #include "app_icon.h"
 #include "hw_renderer.h"
 #include "discs.h"
+#include "platform.h"
+#include "touch_pad.h"
 
 extern "C" {
 #include "psx.h"
@@ -118,6 +119,7 @@ struct Settings {
     bool thin_fix = true;  // widen sub-pixel-thin 3D triangles to a native pixel
     int  aspect = 0;       // 0 4:3, 1 16:9, 2 16:10, 3 21:9, 4 32:9, 5 auto (window)
     bool stretch_ui = false;
+    int  touch = TOUCH_NEVER; // on-screen controller: TOUCH_AUTO (no controller connected), TOUCH_ALWAYS, TOUCH_NEVER
 };
 static const float k_aspects[] = {4.0f / 3.0f, 16.0f / 9.0f, 16.0f / 10.0f, 21.0f / 9.0f, 32.0f / 9.0f, 0.0f};
 static Settings g_set;
@@ -245,9 +247,7 @@ static std::string g_jp_disc_path, g_usa_disc_path;   // what this session boote
 static DiscSetup g_discs;                              // what ujl.ini lists (the wizard may change it mid-session)
 
 // ---------------------------------------------------------------- input
-// PS1 digital pad bits (active low)
-enum { B_SELECT = 0, B_L3, B_R3, B_START, B_UP, B_RIGHT, B_DOWN, B_LEFT, B_L2, B_R2, B_L1, B_R1,
-       B_TRIANGLE, B_CIRCLE, B_CROSS, B_SQUARE };
+// PS1 digital pad bits (B_SELECT..B_SQUARE, active low on the wire): touch_pad.h
 
 static std::vector<SDL_Gamepad *> g_pads;
 
@@ -368,7 +368,7 @@ static bool file_exists(const std::string &p) {
 // Look in the exe folder and up to 4 parents for a disc image that matches this build.
 static std::string search_disc() {
     std::string dir = g_base_dir;
-    for (int up = 0; up <= 4; up++) {
+    for (int up = 0; up <= (UJL_IOS ? 0 : 4); up++) {   // iOS: only the app's Documents folder
         std::string preferred = dir + "Um Jammer Lammy (JP).bin";
         if (file_exists(preferred) && rt_probe_disc(preferred.c_str())) return preferred;
         for (const char *pat : {"*.bin", "*.img", "*.iso"}) {
@@ -391,12 +391,12 @@ static std::string search_disc() {
 
 // USA disc (asset source for the English title logo), found the same way as the JP disc
 static std::string search_usa_disc(const std::string &jp_disc) {
-    std::string remembered = ini_get("usa_disc");   // picked in settings
+    std::string remembered = disc_path_from_ini(ini_get("usa_disc"));   // picked in settings
     if (!remembered.empty() && file_exists(remembered) && disc_image_boots(remembered.c_str(), "SCUS_944.48"))
         return remembered;
     std::string dir = jp_disc.substr(0, jp_disc.find_last_of("/\\") + 1);
     std::vector<std::string> dirs = {dir, g_base_dir};
-    for (int up = 0; up < 4; up++) {
+    for (int up = 0; up < (UJL_IOS ? 0 : 4); up++) {
         std::string &d = dirs.back();
         if (d.size() < 2) break;
         size_t cut = d.find_last_of("/\\", d.size() - 2);
@@ -439,6 +439,61 @@ static void save_shot(int fbw, int fbh, const char *name) {
     SDL_DestroySurface(sf);
 }
 
+// iOS (and Android) apps get suspended: no GL calls are allowed in the background (the process is killed for
+// them), and the app may be terminated there without warning, so the memory card is written out first. While
+// the frontend stops replaying, the game thread blocks in gpu_rec_vblank, which pauses the game.
+static std::atomic<bool> g_app_background{false};
+static void app_lifecycle_event(const SDL_Event &e) {
+    switch (e.type) {
+    case SDL_EVENT_WILL_ENTER_BACKGROUND:
+        g_app_background = true;
+        memcard_flush();
+        break;
+    case SDL_EVENT_TERMINATING:
+        memcard_flush();
+        break;
+    case SDL_EVENT_DID_ENTER_FOREGROUND:
+        g_app_background = false;
+        break;
+    default: break;
+    }
+}
+
+// ImGui's SDL3 backend takes the pointer position only from motion events. A touch screen (iOS) can deliver a
+// tap's press without a motion to its new spot first, so ImGui clicked wherever the previous tap had been (and the
+// first tap clicked nothing). Give it the press position first; for a mouse that is the position it already has.
+static void imgui_process_event(const SDL_Event &e) {
+    if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN || e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
+        ImGuiIO &io = ImGui::GetIO();
+        io.AddMouseSourceEvent(e.button.which == SDL_TOUCH_MOUSEID ? ImGuiMouseSource_TouchScreen : ImGuiMouseSource_Mouse);
+        io.AddMousePosEvent(e.button.x, e.button.y);
+    }
+    ImGui_ImplSDL3_ProcessEvent(&e);
+}
+
+// UJL_GL_CHECK=1 (with hw_renderer.cpp's): report GL errors per step of the frame loop.
+static void gl_check_main(const char *where) {
+    static int on = -1;
+    if (on < 0) on = getenv("UJL_GL_CHECK") != nullptr;
+    if (!on) return;
+    static int n;
+    for (GLenum e; (e = glGetError()) != GL_NO_ERROR;)
+        if (n++ < 40) fprintf(stderr, "gl: error 0x%x after %s\n", e, where);
+}
+
+// The window's own framebuffer. 0 on desktop GL; on iOS UIKit's view owns a framebuffer object, which SDL reports.
+// iOS also presents whatever renderbuffer is bound at SDL_GL_SwapWindow, which has to be the view's: the renderer
+// leaves its MSAA renderbuffer bound (presenting then fails with GL_INVALID_OPERATION and the frame never shows).
+static GLuint g_window_fbo, g_window_rb;
+static void bind_window_fb() {
+#if UJL_IOS
+    glBindFramebuffer(GL_FRAMEBUFFER, g_window_fbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, g_window_rb);
+#else
+    if (ujl_glBindFramebuffer) ujl_glBindFramebuffer(GL_FRAMEBUFFER, 0);
+#endif
+}
+
 // First-run setup (before the game boots): the wizard in its own frame loop. False = the player quit.
 // Dev: UJL_SETUP_DROP="a;b;..." drops those files on the wizard at start; UJL_SETUP_SHOTS=1 saves each page to
 // shots/setup_pN.bmp and quits without saving anything (UJL_SETUP_SHOTS=save: saves and starts the game instead).
@@ -463,15 +518,17 @@ static bool run_setup_wizard(SDL_Window *win, const DiscSetup &start) {
         if (shots) wizard_set_page(frame / 20);
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            ImGui_ImplSDL3_ProcessEvent(&e);
+            imgui_process_event(e);
             if (e.type == SDL_EVENT_QUIT) r = WIZ_QUIT;
             if (e.type == SDL_EVENT_DROP_FILE) wizard_drop_file(e.drop.data);
+            app_lifecycle_event(e);
             if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F11) {
                 bool fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN;
                 SDL_SetWindowFullscreen(win, !fs);
             }
         }
         if (r != WIZ_RUNNING) break;
+        if (g_app_background) { SDL_Delay(50); continue; }   // iOS: no GL calls while in the background
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
@@ -524,8 +581,7 @@ int main(int argc, char **argv) {
         else disc_arg = argv[i];
     }
     {
-        const char *bp = SDL_GetBasePath();
-        g_base_dir = bp ? bp : "";
+        g_base_dir = platform_data_dir();   // the exe folder; iOS: the app's Documents folder
         /* log to a file next to the exe so problems can be diagnosed when double-clicked */
         if (!getenv("UJL_LOG_STDERR")) freopen((g_base_dir + "ujl.log").c_str(), "w", stderr);
         setvbuf(stderr, nullptr, _IONBF, 0);
@@ -534,10 +590,20 @@ int main(int argc, char **argv) {
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4, "1");
+#if UJL_IOS
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");        // dim; the first swipe from the bottom doesn't leave the game
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO)) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
+#if UJL_IOS
+    // OpenGL ES 3.0 (hw_renderer.cpp turns its shaders into GLSL ES)
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#else
     // GL 4.1 core when available (sample masks: anti-aliased sprite edges), otherwise 3.3 core
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
@@ -545,13 +611,15 @@ int main(int argc, char **argv) {
 #ifdef __APPLE__
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
 #endif
+#endif
     // UJL_SCRIPT_HIDDEN=WxH (dev, with UJL_SCRIPT): hidden window, drawing into an offscreen buffer of that size, so
     // renderer tests don't put a window on the desktop. Shots read that buffer.
     int hid_w = 0, hid_h = 0;
     if (const char *hs = getenv("UJL_SCRIPT_HIDDEN"))
         if (sscanf(hs, "%dx%d", &hid_w, &hid_h) != 2 || hid_w < 64 || hid_h < 48) hid_w = hid_h = 0;
     SDL_Window *win = SDL_CreateWindow("Ultimate Um Jammer Lammy", hid_w ? hid_w : 1280, hid_h ? hid_h : 960,
-                                       SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (hid_w ? SDL_WINDOW_HIDDEN : 0));
+                                       SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (hid_w ? SDL_WINDOW_HIDDEN : 0) |
+                                       (UJL_IOS ? SDL_WINDOW_FULLSCREEN | SDL_WINDOW_BORDERLESS : 0));
     if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
     if (SDL_Surface *ic = SDL_CreateSurfaceFrom(k_app_icon_w, k_app_icon_h, SDL_PIXELFORMAT_ABGR8888, (void *)k_app_icon_rgba, k_app_icon_w * 4)) {
         SDL_SetWindowIcon(win, ic); // window/taskbar icon on every platform (Windows also gets it from the exe resource)
@@ -559,6 +627,7 @@ int main(int argc, char **argv) {
     }
     if (start_fullscreen) SDL_SetWindowFullscreen(win, true);
     SDL_GLContext gl = SDL_GL_CreateContext(win);
+    if (!gl && UJL_IOS) { fprintf(stderr, "gl: no OpenGL ES 3 context: %s\n", SDL_GetError()); return 1; }
     if (!gl) {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -566,6 +635,11 @@ int main(int argc, char **argv) {
     }
     SDL_GL_MakeCurrent(win, gl);
     SDL_GL_SetSwapInterval(1);
+#if UJL_IOS
+    g_window_fbo = (GLuint)SDL_GetNumberProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER, 0);
+    g_window_rb = (GLuint)SDL_GetNumberProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_UIKIT_OPENGL_RENDERBUFFER_NUMBER, 0);
+    fprintf(stderr, "gl: %s, window framebuffer %u\n", (const char *)glGetString(GL_VERSION), g_window_fbo);
+#endif
     // Launched from a shortcut/launcher without focus, or under another window: make sure it is shown and on top.
     if (!hid_w) {
         SDL_ShowWindow(win);
@@ -575,10 +649,25 @@ int main(int argc, char **argv) {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::GetIO().IniFilename = "ujl_imgui.ini";
     ImGui::StyleColorsDark();
+#if UJL_IOS
+    static const std::string imgui_ini = g_base_dir + "ujl_imgui.ini";   // the bundle is read-only
+    ImGui::GetIO().IniFilename = imgui_ini.c_str();
+    {   // finger-sized widgets, and only title bars move windows (a drag in a window shouldn't carry it off)
+        ImGuiStyle &st = ImGui::GetStyle();
+        st.ScaleAllSizes(1.5f);
+        st.FontScaleMain = 1.35f;
+        st.ScrollbarSize = 26;
+        st.GrabMinSize = 22;
+        ImGui::GetIO().ConfigWindowsMoveFromTitleBarOnly = true;
+    }
+    ImGui_ImplSDL3_InitForOpenGL(win, gl);
+    ImGui_ImplOpenGL3_Init("#version 300 es");
+#else
+    ImGui::GetIO().IniFilename = "ujl_imgui.ini";
     ImGui_ImplSDL3_InitForOpenGL(win, gl);
     ImGui_ImplOpenGL3_Init("#version 330 core");
+#endif
 
     g_frame_mtx = SDL_CreateMutex();
     {
@@ -618,7 +707,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     disc = absolute_path(disc);
-    if (g_discs.jp != disc) { g_discs.jp = disc; ini_set("disc", disc); }
+    if (g_discs.jp != disc) { g_discs.jp = disc; ini_set("disc", disc_path_to_ini(disc)); }
     g_jp_disc_path = disc;
     fprintf(stderr, "disc: %s\n", disc.c_str());
     {   /* the USA disc (if imported) supplies the English title logo, menu text and credits song */
@@ -659,7 +748,14 @@ int main(int argc, char **argv) {
     SDL_GetWindowSizeInPixels(win, &settled_w, &settled_h);
     int pend_w = settled_w, pend_h = settled_h;
     uint64_t pend_t = 0;
-#ifdef __APPLE__
+#if UJL_IOS && TARGET_OS_SIMULATOR
+    // The Simulator's OpenGL ES is a CPU rasterizer (GLRendererFloat): native resolution keeps it usable.
+    const int auto_cap = 1;
+#elif UJL_IOS
+    // Phones and tablets: 2x (a 2048x1024 VRAM target, about 1440p for the picture) keeps the tile GPU's
+    // target loads/stores cheap; higher scales stay available as explicit choices.
+    const int auto_cap = 2;
+#elif defined(__APPLE__)
     // Auto on a Mac stops at 3x. A Retina window asked for 7x (a 7168x3584 VRAM target): Stage 1 ran at 12-20 fps
     // on an M2 (Apple's GL sits on Metal and its tile GPU loads/stores whole targets on every switch); 4x still
     // dipped to ~16 fps, 3x holds 56-60 like 2x. Higher scales stay available as explicit choices.
@@ -671,8 +767,14 @@ int main(int argc, char **argv) {
         if (g_set.res_scale) return std::min(g_set.res_scale, max_scale);
         return std::max(1, std::min({max_scale, auto_cap, (settled_h + 239) / 240}));
     };
-    g_set.textures = ini_get("textures", "1") == "0" ? 0 : 1;
-    g_set.aa = std::max(0, std::min(3, atoi(ini_get("aa", "2").c_str())));
+#if UJL_IOS && TARGET_OS_SIMULATOR
+    // The Simulator rasterizes on the CPU: smoothed textures and MSAA took the menus to ~1 fps. Settings still apply.
+    const char *def_textures = "0", *def_aa = "0";
+#else
+    const char *def_textures = "1", *def_aa = "2";
+#endif
+    g_set.textures = ini_get("textures", def_textures) == "0" ? 0 : 1;
+    g_set.aa = std::max(0, std::min(3, atoi(ini_get("aa", def_aa).c_str())));
     if (hw_ok) hw_ok = hw_init(want_scale(), 1 << g_set.aa);
     g_set.ui_sharp = ini_get("ui_sharp", "1") != "0";
     g_set.subpixel = ini_get("subpixel", "1") != "0";
@@ -680,6 +782,7 @@ int main(int argc, char **argv) {
     if (hw_ok) { hw_set_smooth(g_set.textures); hw_set_ui_sharp(g_set.ui_sharp); hw_set_subpixel(g_set.subpixel); hw_set_thin_fix(g_set.thin_fix); }
     g_set.aspect = std::max(0, std::min(5, atoi(ini_get("aspect", "5").c_str())));
     g_set.stretch_ui = ini_get("stretch_ui", "0") == "1";
+    g_set.touch = std::max(0, std::min(2, atoi(ini_get("touch_controls", UJL_IOS ? "0" : "2").c_str())));
     g_unlock_all = ini_get("unlock_all", "0") == "1";
     g_cd_fast_load = ini_get("fast_load", "0") == "1";
     if (!g_script.empty()) {
@@ -712,13 +815,15 @@ int main(int argc, char **argv) {
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            ImGui_ImplSDL3_ProcessEvent(&e);
+            imgui_process_event(e);
             if (e.type == SDL_EVENT_QUIT) running = false;
             if (e.type == SDL_EVENT_WINDOW_OCCLUDED || e.type == SDL_EVENT_WINDOW_MINIMIZED) win_hidden = true;
             if (e.type == SDL_EVENT_WINDOW_EXPOSED || e.type == SDL_EVENT_WINDOW_RESTORED ||
                 e.type == SDL_EVENT_WINDOW_SHOWN || e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) win_hidden = hid_w != 0;
             if (e.type == SDL_EVENT_GAMEPAD_ADDED) open_pad(e.gdevice.which);
             if (e.type == SDL_EVENT_GAMEPAD_REMOVED) close_pad(e.gdevice.which);
+            app_lifecycle_event(e);
+            touchpad_event(e);
             if (e.type == SDL_EVENT_DROP_FILE) {   // a disc image or ROM set dropped on the window: open Manage discs with it
                 if (!wizard_active()) { wizard_open(false, g_discs); g_set.show_overlay = true; }
                 wizard_drop_file(e.drop.data);
@@ -732,7 +837,12 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        g_input_buttons = poll_buttons(!ImGui::GetIO().WantCaptureKeyboard);
+        g_input_buttons = (uint16_t)(poll_buttons(!ImGui::GetIO().WantCaptureKeyboard) & ~touchpad_held());
+        if (touchpad_take_menu()) {
+            g_set.show_overlay = !g_set.show_overlay;
+            fprintf(stderr, "touch: menu button -> settings %s\n", g_set.show_overlay ? "open" : "closed");
+        }
+        if (g_app_background) { SDL_Delay(50); continue; }   // iOS: suspended, no GL (the game waits for replays)
 
         {
             int fw, fh;
@@ -741,9 +851,23 @@ int main(int argc, char **argv) {
             if (fw != pend_w || fh != pend_h) { pend_w = fw; pend_h = fh; pend_t = tnow; }
             if ((pend_w != settled_w || pend_h != settled_h) && tnow - pend_t >= 500) { settled_w = pend_w; settled_h = pend_h; }
         }
+        {   // on-screen controller: shown per the setting, never over the settings or the disc wizard
+            int ww = 0, wh = 0;
+            SDL_GetWindowSize(win, &ww, &wh);
+            SDL_Rect sa{0, 0, ww, wh};
+            SDL_GetWindowSafeArea(win, &sa);
+            bool pad_on = (g_set.touch == TOUCH_ALWAYS || (g_set.touch == TOUCH_AUTO && g_pads.empty())) &&
+                          !g_set.show_overlay && !wizard_active();
+            touchpad_update((float)ww, (float)wh, TouchRect{(float)sa.x, (float)sa.y, (float)(sa.x + sa.w), (float)(sa.y + sa.h)},
+                            pad_on, (UJL_IOS || g_set.touch != TOUCH_NEVER) && !g_set.show_overlay && !wizard_active());
+        }
         {
             float asp = k_aspects[g_set.aspect];
-            if (asp == 0.0f) asp = settled_h > 0 ? (float)settled_w / settled_h : 4.0f / 3.0f;
+            if (asp == 0.0f) {   // auto: the window, or the space between the touch buttons while they show
+                TouchRect fr = touchpad_free_rect();
+                if (touchpad_visible() && fr.y1 > fr.y0) asp = (fr.x1 - fr.x0) / (fr.y1 - fr.y0);
+                else asp = settled_h > 0 ? (float)settled_w / settled_h : 4.0f / 3.0f;
+            }
             if (asp < 4.0f / 3.0f + 0.01f || g_set.renderer != 1) asp = 0.0f;
             // The front-end menus (title, candy bars, options, stage select: overlay COMOD0.MEN) are 2D art the game
             // rotates through the GTE around the screen center; widening would stretch them. Pillarbox them.
@@ -766,6 +890,7 @@ int main(int argc, char **argv) {
             size_t n = gpu_rec_take(&cmds);
             if (n && hw_replay(cmds, n, &hw_disp)) hw_have_frame = true;
         }
+        gl_check_main("replay");
 
         if (g_frame_new.exchange(false)) {
             SDL_LockMutex(g_frame_mtx);
@@ -784,6 +909,7 @@ int main(int argc, char **argv) {
             }
             SDL_UnlockMutex(g_frame_mtx);
         }
+        gl_check_main("frame upload");
 
         if (g_cd_fast_load && rt_load_turbo_active() && !g_script_quit) {
             // fast-forwarding through a load: keep showing the last picture (no loading screen) and stay responsive
@@ -807,6 +933,7 @@ int main(int argc, char **argv) {
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
+        gl_check_main("imgui new frame");
 
         // game image, letterboxed/pillarboxed to its aspect: the wide twin in widescreen, else 4:3.
         // FMV (24bpp) always comes from the native frame at 4:3.
@@ -829,6 +956,7 @@ int main(int argc, char **argv) {
         float w = ds.x, h = ds.x / aspect;
         if (h > ds.y) { h = ds.y; w = h * aspect; }
         ImVec2 p0((ds.x - w) * 0.5f, (ds.y - h) * 0.5f);
+        if (touchpad_visible()) touchpad_fit(aspect, &p0.x, &p0.y, &w, &h);   // between the touch buttons
         if (use_hw && hw_disp.enabled) {
             ImGui::GetBackgroundDrawList()->AddImage((ImTextureID)(intptr_t)view.tex, p0, ImVec2(p0.x + w, p0.y + h),
                                                      ImVec2(view.u0, view.v0), ImVec2(view.u1, view.v1));
@@ -837,8 +965,19 @@ int main(int argc, char **argv) {
         }
 
         if (g_set.show_overlay) {
+#if UJL_IOS
+            {   // fit the safe area (camera cutout, rounded corners): centered, scrolling inside
+                float fs = ImGui::GetFontSize();
+                SDL_Rect sa{0, 0, (int)ds.x, (int)ds.y};
+                if (!SDL_GetWindowSafeArea(win, &sa) || sa.w <= 0 || sa.h <= 0) sa = SDL_Rect{0, 0, (int)ds.x, (int)ds.y};
+                ImGui::SetNextWindowPos(ImVec2(sa.x + sa.w * 0.5f, sa.y + sa.h * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+                ImGui::SetNextWindowSize(ImVec2(std::min(fs * 34, (float)sa.w - 16), (float)sa.h - 12), ImGuiCond_Appearing);
+            }
+            ImGui::Begin("UltimateUJL Settings###settings", &g_set.show_overlay, ImGuiWindowFlags_NoCollapse);
+#else
             ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_FirstUseEver);
             ImGui::Begin("UltimateUJL Settings  (F1 / Esc)", &g_set.show_overlay);
+#endif
             ImGui::SeparatorText("Display");
             if (!hw_ok) ImGui::BeginDisabled();
             if (ImGui::Combo("Renderer", &g_set.renderer, "Software (original 320x240)\0Hardware (high resolution)\0")) {
@@ -1009,7 +1148,7 @@ int main(int argc, char **argv) {
                     static const SDL_DialogFileFilter filters[] = {
                         {"PS1 memory cards and saves", "mcr;mcd;gme;mem;vgs;vmp;srm;ps;mc;ddf;mcs;psx;mcb;bin"},
                         {"All files", "*"}};
-                    SDL_ShowOpenFileDialog(card_pick_cb, nullptr, win, filters, 2, nullptr, false);
+                    platform_open_file_dialog(card_pick_cb, nullptr, win, filters, 2, nullptr, false);
                 }
                 if (ImGui::BeginItemTooltip()) {
                     ImGui::TextUnformatted("Whole cards: .mcr/.mcd/.srm (raw), DexDrive .gme, .mem/.vgs, PSP/Vita .vmp.\n"
@@ -1036,7 +1175,14 @@ int main(int argc, char **argv) {
                     ImGui::EndTooltip();
                 }
             }
-            if (g_pads.empty()) ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "No controller detected (keyboard only)");
+            if (ImGui::Combo("Touch controls", &g_set.touch, "Auto (hidden while a controller is connected)\0Always\0Never\0"))
+                ini_set("touch_controls", std::to_string(g_set.touch));
+            if (ImGui::BeginItemTooltip()) {
+                ImGui::TextUnformatted("An on-screen PlayStation pad at the sides of the screen. The game picture moves\n"
+                                       "between its buttons while it shows.");
+                ImGui::EndTooltip();
+            }
+            if (g_pads.empty()) ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), UJL_IOS ? "No controller connected" : "No controller detected (keyboard only)");
             for (SDL_Gamepad *g : g_pads) ImGui::BulletText("%s", SDL_GetGamepadName(g));
             {
                 static const char *names[16] = {"Select", "L3", "R3", "Start", "Up", "Right", "Down", "Left",
@@ -1050,6 +1196,7 @@ int main(int argc, char **argv) {
             ImGui::Checkbox("VRAM viewer (F2)", &g_show_vram);
             ImGui::Text("Display %dx%d @ %d,%d  %s", g_gpu_display.hres, g_gpu_display.vres,
                         g_gpu_display.disp_x, g_gpu_display.disp_y, g_gpu_display.depth24 ? "24bpp" : "15bpp");
+            touchpad_drag_scroll();
             ImGui::End();
         }
         if (wizard_active() && wizard_draw(win) == WIZ_DONE) g_discs = wizard_result();
@@ -1069,12 +1216,15 @@ int main(int argc, char **argv) {
                               IM_COL32(0, 0, 0, 110), fs * 0.25f);
             dl->AddText(ImGui::GetFont(), fs, at, IM_COL32(255, 255, 255, 190), wm);
         }
+        touchpad_draw(ImGui::GetForegroundDrawList());
         if (g_set.show_fps)
-            ImGui::GetForegroundDrawList()->AddText(ImVec2(8, 8), 0xFF00FF00, (std::to_string((int)(ui_fps + 0.5f)) + " fps  (" + std::to_string((int)(emu_fps + 0.5f)) + " vblank/s)").c_str());
+            // iOS: on the picture's corner (the window corner is under the menu button and the camera cutout)
+            ImGui::GetForegroundDrawList()->AddText(UJL_IOS ? ImVec2(p0.x + 8, std::max(p0.y, 0.0f) + 8) : ImVec2(8, 8), 0xFF00FF00, (std::to_string((int)(ui_fps + 0.5f)) + " fps  (" + std::to_string((int)(emu_fps + 0.5f)) + " vblank/s)").c_str());
 
         ImGui::Render();
         int fbw, fbh;
         SDL_GetWindowSizeInPixels(win, &fbw, &fbh);
+        bind_window_fb();
         if (hid_w) {
             static GLuint hid_fbo, hid_rb;
             fbw = hid_w; fbh = hid_h;
@@ -1091,7 +1241,9 @@ int main(int argc, char **argv) {
         glViewport(0, 0, fbw, fbh);
         glClearColor(0, 0, 0, 1);
         glClear(GL_COLOR_BUFFER_BIT);
+        gl_check_main("clear");
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        gl_check_main("imgui render");
         if (int st = g_shot_req.exchange(-1); st >= 0) {
             char fn[64];
             SDL_snprintf(fn, sizeof fn, "hw_v%05d.bmp", st);
@@ -1105,7 +1257,9 @@ int main(int argc, char **argv) {
             SDL_Delay(8);
         } else {
             uint64_t ts = SDL_GetTicks();
+            gl_check_main("before swap");
             SDL_GL_SwapWindow(win);
+            gl_check_main("swap");
             uint64_t dt = SDL_GetTicks() - ts;
             if (dt > 250)
                 fprintf(stderr, "present: swap stalled %llu ms (focused=%d)\n", (unsigned long long)dt,

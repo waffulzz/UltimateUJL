@@ -20,6 +20,8 @@
 #include <algorithm>
 
 #include "imgui.h"
+#include "platform.h"
+#include "touch_pad.h"
 
 extern "C" {
 bool disc_image_pvd(const char *path, uint8_t pvd[2048]);
@@ -134,6 +136,11 @@ DiscInfo disc_identify(const std::string &path) {
 
 std::vector<std::string> disc_search_dirs() {
     std::vector<std::string> dirs = {g_base_dir};
+#if UJL_IOS
+    // the app's Documents folder (Files app / Finder file sharing), and Inbox where "Open in" puts files
+    dirs.push_back(g_base_dir + "Inbox/");
+    return dirs;
+#endif
     for (int up = 0; up < 4; up++) {
         const std::string &d = dirs.back();
         if (d.size() < 2) break;
@@ -272,20 +279,37 @@ RomCheck romset_check(const std::string &path) {
 }
 
 // ---------------------------------------------------------------- ujl.ini
+// iOS moves the app's data container (a new UUID in its path) when the app is reinstalled or updated, so a disc
+// image inside Documents is stored relative to it there and resolved again at load.
+std::string disc_path_to_ini(const std::string &p) {
+#if UJL_IOS
+    if (!g_base_dir.empty() && p.compare(0, g_base_dir.size(), g_base_dir) == 0) return p.substr(g_base_dir.size());
+#endif
+    return p;
+}
+std::string disc_path_from_ini(const std::string &p) {
+#if UJL_IOS
+    if (!p.empty() && p[0] != '/') return g_base_dir + p;
+    size_t d = p.find("/Documents/");   // an absolute path into an older container: the same file in this one
+    if (d != std::string::npos && !is_file(p) && !is_dir(p)) return g_base_dir + p.substr(d + strlen("/Documents/"));
+#endif
+    return p;
+}
+
 DiscSetup discs_from_ini() {
     DiscSetup s;
-    s.jp = ini_get("disc");
-    s.usa = ini_get("usa_disc");
-    s.arcade_cd = ini_get("arcade_cd");
-    s.arcade_roms = ini_get("arcade_roms");
+    s.jp = disc_path_from_ini(ini_get("disc"));
+    s.usa = disc_path_from_ini(ini_get("usa_disc"));
+    s.arcade_cd = disc_path_from_ini(ini_get("arcade_cd"));
+    s.arcade_roms = disc_path_from_ini(ini_get("arcade_roms"));
     return s;
 }
 
 void discs_to_ini(const DiscSetup &s) {
-    ini_set("disc", s.jp);
-    ini_set("usa_disc", s.usa);
-    ini_set("arcade_cd", s.arcade_cd);
-    ini_set("arcade_roms", s.arcade_roms);
+    ini_set("disc", disc_path_to_ini(s.jp));
+    ini_set("usa_disc", disc_path_to_ini(s.usa));
+    ini_set("arcade_cd", disc_path_to_ini(s.arcade_cd));
+    ini_set("arcade_roms", disc_path_to_ini(s.arcade_roms));
 }
 
 // ---------------------------------------------------------------- features
@@ -344,14 +368,23 @@ static struct Wizard {
     bool msg_err[SLOT_COUNT] = {};
 } W;
 
-// File dialogs answer on another thread: the path is stored before the slot is published.
-static std::string g_pick_path;
-static std::atomic<int> g_pick_slot{-1};
+// File dialogs may answer on another thread: picks are queued under a lock and handled in wizard_draw.
+// (iOS lets several files be picked at once, e.g. both discs.)
+struct Pick { int slot; std::string path; };
+static std::vector<Pick> g_picks;
+static SDL_Mutex *g_pick_mtx;
 static void SDLCALL on_wizard_pick(void *ud, const char *const *files, int) {
-    if (files && files[0]) {
-        g_pick_path = files[0];
-        g_pick_slot = (int)(intptr_t)ud;
+    if (!files || !files[0]) return;
+    SDL_LockMutex(g_pick_mtx);
+    std::vector<Pick> cues;   // a .cue after the images it names, so its data file was already copied
+    for (int i = 0; files[i]; i++) {
+        Pick pk{(int)(intptr_t)ud, files[i]};
+        std::string e = ext_of(pk.path);
+        if (e == ".cue" || e == ".ccd") cues.push_back(pk);
+        else g_picks.push_back(pk);
     }
+    g_picks.insert(g_picks.end(), cues.begin(), cues.end());
+    SDL_UnlockMutex(g_pick_mtx);
 }
 
 static void set_msg(int slot, const std::string &m, bool err) {
@@ -468,8 +501,9 @@ static void open_dialog(SDL_Window *win, int slot) {
     const std::string &cur = slot == SLOT_JP ? W.s.jp : slot == SLOT_USA ? W.s.usa : slot == SLOT_ARCADE_CD ? W.s.arcade_cd : W.s.arcade_roms;
     if (!cur.empty()) start_dir = dir_of(cur);
     else if (!W.s.jp.empty()) start_dir = dir_of(W.s.jp);
-    if (slot == SLOT_ARCADE_ROMS) SDL_ShowOpenFileDialog(on_wizard_pick, (void *)(intptr_t)slot, win, roms, 2, start_dir.c_str(), false);
-    else SDL_ShowOpenFileDialog(on_wizard_pick, (void *)(intptr_t)slot, win, discs, 2, start_dir.c_str(), false);
+    if (!g_pick_mtx) g_pick_mtx = SDL_CreateMutex();
+    if (slot == SLOT_ARCADE_ROMS) platform_open_file_dialog(on_wizard_pick, (void *)(intptr_t)slot, win, roms, 2, start_dir.c_str(), false);
+    else platform_open_file_dialog(on_wizard_pick, (void *)(intptr_t)slot, win, discs, 2, start_dir.c_str(), UJL_IOS != 0);
 }
 
 static void draw_msg(int slot) {
@@ -496,7 +530,7 @@ static void draw_slot(SDL_Window *win, int slot, const char *title, const char *
     ImGui::TextWrapped("%s", about);
     draw_path_status(path);
     if (ImGui::Button(path.empty() ? "Choose..." : "Change...")) open_dialog(win, slot);
-    if (slot == SLOT_ARCADE_ROMS) {
+    if (slot == SLOT_ARCADE_ROMS && platform_can_pick_folders()) {
         ImGui::SameLine();
         if (ImGui::Button("Choose folder...")) {
             std::string start_dir = path.empty() ? g_base_dir : path;
@@ -523,14 +557,23 @@ static bool big_button(const char *label, bool enabled = true) {
 
 WizardResult wizard_draw(SDL_Window *win) {
     if (!W.active) return WIZ_CLOSED;
-    int ps = g_pick_slot.exchange(-1);
-    if (ps >= 0) wizard_assign(ps, g_pick_path);
+    if (g_pick_mtx) {
+        SDL_LockMutex(g_pick_mtx);
+        std::vector<Pick> picks;
+        picks.swap(g_picks);
+        SDL_UnlockMutex(g_pick_mtx);
+        for (const Pick &pk : picks) wizard_assign(pk.slot, pk.path);
+    }
 
     ImVec2 ds = ImGui::GetIO().DisplaySize;
     float fs = ImGui::GetFontSize();
-    ImVec2 size(std::min(fs * 62, ds.x - 48), std::min(fs * 58, ds.y - 48));
+    // within the safe area (a phone's camera cutout and rounded corners); the whole window elsewhere
+    SDL_Rect sa{0, 0, (int)ds.x, (int)ds.y};
+    if (!SDL_GetWindowSafeArea(win, &sa) || sa.w <= 0 || sa.h <= 0) sa = SDL_Rect{0, 0, (int)ds.x, (int)ds.y};
+    float margin = UJL_IOS ? 12.0f : 48.0f;
+    ImVec2 size(std::min(fs * 62, (float)sa.w - margin), std::min(fs * 58, (float)sa.h - margin));
     ImGuiCond cond = W.first_run ? ImGuiCond_Always : ImGuiCond_Appearing;
-    ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, ds.y * 0.5f), cond, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowPos(ImVec2(sa.x + sa.w * 0.5f, sa.y + sa.h * 0.5f), cond, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(size, cond);
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
     if (W.first_run) flags |= ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
@@ -554,9 +597,16 @@ WizardResult wizard_draw(SDL_Window *win) {
         ImGui::BulletText("Um Jammer Lammy, USA (SCUS-94448): English logo, menus, messages and credits song.");
         ImGui::BulletText("UJL NOW! arcade CD and ROM set: arcade extras (in progress).");
         ImGui::Spacing();
+#if UJL_IOS
+        ImGui::TextWrapped("Disc images are raw .bin or .img files. Copy them into this app's folder (Files app: "
+                           "On My iPhone/iPad > Ultimate UJL, or Finder's file sharing with the device connected), "
+                           "or choose them on the next pages, which copies them there. All of this can be changed "
+                           "later in the menu (top left) > Discs.");
+#else
         ImGui::TextWrapped("Disc images are raw .bin or .img files; picking the .cue or .ccd next to one works too. "
                            "You can also drag files onto this window. All of this can be changed later in "
                            "Settings (F1) > Discs.");
+#endif
         break;
     case PAGE_JP:
         ImGui::TextDisabled("%s", step);
@@ -569,10 +619,28 @@ WizardResult wizard_draw(SDL_Window *win) {
         if (ImGui::Button(W.s.jp.empty() ? "Choose disc image..." : "Change...")) open_dialog(win, SLOT_JP);
         draw_msg(SLOT_JP);
         ImGui::PopID();
+#if UJL_IOS
+        if (ImGui::Button("Look again")) {   // after copying images in with the Files app while this is open
+            int found = 0;
+            for (const DiscInfo &d : disc_search(disc_search_dirs())) {
+                found++;
+                if (d.kind == DISC_JP) W.s.jp = d.path;
+                else if (d.kind == DISC_USA && W.s.usa.empty()) W.s.usa = d.path;
+                else if (d.kind == DISC_ARCADE_CD && W.s.arcade_cd.empty()) W.s.arcade_cd = d.path;
+            }
+            set_msg(SLOT_JP, W.s.jp.empty() ? "The Japanese disc isn't in the app's folder." :
+                             "Found " + std::to_string(found) + " disc image(s) in the app's folder.", W.s.jp.empty());
+        }
+        if (W.s.jp.empty()) {
+            ImGui::Spacing();
+            ImGui::TextDisabled("Not in the app's folder yet. Copy it there with the Files app, or choose it.");
+        }
+#else
         if (W.s.jp.empty()) {
             ImGui::Spacing();
             ImGui::TextDisabled("Not found next to the game. Drag the image onto this window, or choose it.");
         }
+#endif
         break;
     case PAGE_OPTIONAL:
         ImGui::TextDisabled("%s", step);
@@ -603,6 +671,7 @@ WizardResult wizard_draw(SDL_Window *win) {
             ImGui::TextColored(k_yellow, "Restart the game to use the new discs.");
         break;
     }
+    touchpad_drag_scroll();
     ImGui::EndChild();
     ImGui::Separator();
     WizardResult res = WIZ_RUNNING;

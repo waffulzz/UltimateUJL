@@ -1,9 +1,22 @@
 // Minimal OpenGL 3.3 function loader for the hardware renderer (GL 1.1 entry points come from the
 // system GL library; everything newer is fetched through SDL_GL_GetProcAddress).
+// iOS: OpenGL ES 3.0, whose headers declare every one of these; they're still fetched the same way (SDL looks
+// them up in OpenGLES.framework), so the renderer has one code path.
 #pragma once
 #include <stddef.h> /* ptrdiff_t (glibc's GL headers don't pull it in) */
 #include <SDL3/SDL.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_IOS
+#include <OpenGLES/ES3/gl.h>
+#include <OpenGLES/ES3/glext.h>
+#ifndef APIENTRY
+#define APIENTRY
+#endif
+#else
 #include <SDL3/SDL_opengl.h>
+#endif
 
 #ifndef GL_FRAMEBUFFER
 #define GL_FRAMEBUFFER 0x8D40

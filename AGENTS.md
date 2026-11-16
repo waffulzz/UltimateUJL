@@ -45,6 +45,19 @@ dev packages, see `.github/workflows/ci.yml`), then run the same `prepare.sh` an
 `.exe` suffix there. Host threads that run recompiled code are created with an explicit 8 MB stack
 (`rt_create_thread` in `bios.c`), because macOS gives secondary threads only 512 KB.
 
+iOS/iPadOS (on a Mac with Xcode and an iOS Simulator runtime; notes in docs/ARCHITECTURE.md, "iOS"): the same
+`build/gen_jp`, cross-compiled into `UltimateUJL.app` (only the `ujl` target exists there). `bash tools/build_ios.sh
+"Um Jammer Lammy (JP).bin"` configures `build/ios-sim`, builds, installs on the booted simulator and clones the disc
+image into the app's Documents. `bash tools/build_ios.sh --ipa` writes an unsigned `build/ios-device/UltimateUJL.ipa`
+for sideloading tools that sign it themselves (IPAs are gitignored: they hold code built from the user's disc, so never
+share one). By hand:
+
+```bash
+cmake -S . -B build/ios-sim -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build/ios-sim
+```
+
 After editing `tools/recomp/gen.py` or `tools/recomp/overrides_*.txt`, regenerate. This is the generator step of
 `prepare.sh`:
 
@@ -98,7 +111,8 @@ There's no unit test suite. Verification means running the game headless or scri
   `cross`.
 - Runtime stats/A-B switches (all env vars): `UJL_CD_STATS`, `UJL_FLIP_STATS`, `UJL_FPS_STATS`, `UJL_AUDIO_STATS`, `UJL_GTE_STATS`, `UJL_SUBPIX_STATS`,
   `UJL_WAIT_STATS`, `UJL_FAST_LOAD`, `UJL_SOFT_RASTER`, `UJL_FORCE_RATING`, `UJL_FORCE_SCENE` (8,3 = staff roll from Stage 1), `UJL_NCLIP_INT` (integer-only backface test), and
-  `UJL_JP_*` to disable each English patch. `UJL_FORCE_CENSORED=1` serves the USA (censored) Stages 1, 5 and 6
+  `UJL_JP_*` to disable each English patch. `UJL_GL_CHECK=1` names the step behind any GL error, `UJL_TOUCH_LOG=1`
+  logs finger events (iOS simulator: prefix env vars with `SIMCTL_CHILD_` on `xcrun simctl launch`). `UJL_FORCE_CENSORED=1` serves the USA (censored) Stages 1, 5 and 6
   (`censor.c`; the setting "Uncensored content" is on by default because the JP release is uncensored). `UJL_AUTOPLAY=1/2/3`
   turns on Autoplay / Auto-COOL / Auto-FEVER (`autoplay.c`), `UJL_AUTOPLAY_LOG=1` logs its windows, presses and meter. Setup wizard: `UJL_SETUP=1` forces it, `UJL_SETUP_SHOTS=1` saves each
   page and quits, `UJL_SETUP_DROP="a;b"` drops files on it; scripted runs skip it and, once `setup_done=1` is in

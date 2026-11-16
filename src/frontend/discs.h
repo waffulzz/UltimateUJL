@@ -42,6 +42,9 @@ RomCheck romset_check(const std::string &path);
 // What's imported (ujl.ini disc / usa_disc / arcade_cd / arcade_roms).
 struct DiscSetup { std::string jp, usa, arcade_cd, arcade_roms; };
 DiscSetup discs_from_ini();
+// How a path is stored in ujl.ini (iOS: relative to the app's Documents folder, which moves on reinstall)
+std::string disc_path_to_ini(const std::string &p);
+std::string disc_path_from_ini(const std::string &p);
 void discs_to_ini(const DiscSetup &s);
 
 // Wizard. Draw it inside an ImGui frame every frame while active.
