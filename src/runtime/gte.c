@@ -341,6 +341,19 @@ void gte_cmd(CPU *c, uint32_t cmd) {
     case 0x06: { /* NCLIP */
         int64_t x0 = lo16(D[12]), y0 = hi16(D[12]), x1 = lo16(D[13]), y1 = hi16(D[13]), x2 = lo16(D[14]), y2 = hi16(D[14]);
         MAC0 = (int32_t)chkF(c, x0 * y1 + x1 * y2 + x2 * y0 - x0 * y2 - x1 * y0 - x2 * y1);
+        /* Games backface-cull on MAC0's sign. Far-away slivers (Stage 1's cymbal stands) are under a pixel wide, so
+           the area of the integer points is 0 or flips sign as the camera drifts and the polygon blinks out; the
+           widescreen squeeze (g_gte_xscale) makes them ~1.8x thinner still. When all three points came from this
+           GTE's projection, the sign follows their precise (1/256 px) positions instead. UJL_NCLIP_INT=1 disables. */
+        static int int_only = -1;
+        if (int_only < 0) int_only = getenv("UJL_NCLIP_INT") != NULL;
+        if (!int_only && fifo_ok[0] && fifo_ok[1] && fifo_ok[2]) {
+            int64_t X0 = x0 * 256 + fifo_dx[0], Y0 = y0 * 256 + fifo_dy[0], X1 = x1 * 256 + fifo_dx[1],
+                    Y1 = y1 * 256 + fifo_dy[1], X2 = x2 * 256 + fifo_dx[2], Y2 = y2 * 256 + fifo_dy[2];
+            int64_t a = (X1 - X0) * (Y2 - Y0) - (X2 - X0) * (Y1 - Y0);
+            if (a > 0 && MAC0 <= 0) MAC0 = 1;
+            else if (a < 0 && MAC0 >= 0) MAC0 = -1;
+        }
         break;
     }
     case 0x0C: { /* OP */

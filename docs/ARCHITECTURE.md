@@ -381,13 +381,23 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   as needed at load time (never shipped).
 - Credits screen: a big vertical line on the staff roll and a flickering line left of it (user report; not yet
   reproduced: the PROBE_COPY stage-table swap still loads Stage 1, so the menu doesn't pick scenes from that table).
-- Drumset (Stage 1) jitter, fix in (needs a check in play): same-frame SXY collisions (~100/frame) handed vertices
-  another point's sub-pixel fraction. Now gen.py emits gte_store_sxy for SWC2 of SXY0-2/SXYP (store + record the
-  RAM address with the FIFO slot's precise offset; gte.c keeps per-slot offsets through the FIFO), mem.c passes each
-  linked-list word's address (g_gpu_word_addr), and do_polygon looks offsets up by address (value-checked) before
-  falling back to the SXY value cache: 99.8% of Stage 1 vertices resolve by address. UJL_SUBPIX_STATS /
-  UJL_GTE_STATS log coverage, H/SZ and collisions. Full-precision projection (offsets > 1 px from MAC/z) exists
-  behind g_gte_precise (off): with value lookups it shook the crowd; worth retrying now that lookups are by address.
+- **Drum kit stands blinking at a far camera (fixed, gte.c NCLIP)**: in Stage 1's wide shots the cymbal and hi-hat
+  stands vanished every other frame or so, worst at ultrawide. The game backface-culls on NCLIP's sign; the stands
+  are under a native pixel wide there (the widescreen squeeze g_gte_xscale makes them ~1.8x thinner), so the area
+  of the integer SXY points is 0 or flips sign as the camera drifts. NCLIP now takes the sign from the points'
+  sub-pixel positions (fifo_dx/dy) when all three came from an RTP and the signs disagree. Measured at 3440x1440
+  (UJL_FORCE_RATING=1, burst at 76 s): stand pixels per frame alternated ~2200 / 200-900 before, steady 2900-4200
+  after. UJL_NCLIP_INT=1 restores the integer test. Note: in BAD the stage's wobble effect draws the stands as
+  stair-stepped dashes; that's the game's effect, not the renderer, so check renderer issues at GOOD.
+- Same-frame SXY collisions (~100/frame) used to hand vertices another point's sub-pixel fraction. gen.py emits
+  gte_store_sxy for SWC2 of SXY0-2/SXYP (store + record the RAM address with the FIFO slot's precise offset; gte.c
+  keeps per-slot offsets through the FIFO), mem.c passes each linked-list word's address (g_gpu_word_addr), and
+  do_polygon looks offsets up by address (value-checked) before falling back to the SXY value cache: 99.8% of
+  Stage 1 vertices resolve by address. UJL_SUBPIX_STATS / UJL_GTE_STATS log coverage, H/SZ and collisions.
+  Full-precision projection (offsets > 1 px from MAC/z) exists behind g_gte_precise (off): with value lookups it
+  shook the crowd; worth retrying now that lookups are by address.
+- Seen once: a segfault around the scripted quit after a fullscreen 3440x1440 burst (exit code 139, log clean, not
+  reproduced in the next runs). Likely a shutdown race; watch for it.
 - **Crowd jitter (Stage 1)**: "Keep UI pixel-sharp" picked nearest sampling per triangle by UV scale (0.85-1.18).
   The foreground crowd is 3D art at 0.80-0.87 scale, so its triangles flipped between sharp and smoothed as the
   camera drifted, even the two halves of one sprite. Pixel-sharp is now 2D-only (plus GTE-rotated HUD sprites,
