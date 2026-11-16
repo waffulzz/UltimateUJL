@@ -335,9 +335,15 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   windows (19..53 / 55..298 x 14..47). They matched the GTE tag and were stretched around the screen center,
   landing in the wrong place. gte.c now records OFX per projected vertex, prims carry gte_ofx, and the
   renderer undoes the squeeze around that OFX and places them like 2D UI when OFX isn't the screen center.
-- **Fever burst (widescreen)**: large prims that reach the 4:3 edges in 3D scenes are stretched (fever mode's
-  burst rays are 2D polygons from the center outwards; one stopped at the 4:3 edge and the stage showed
-  through in the margin). From the user's screenshot; not reproduced headless (COOL freestyle needs real play).
+- **Fever burst (widescreen, fixed 2026-11-16)**: burst rays are untextured 2D polygons, usually with only
+  their center vertex coming from the GTE. They must all use the same widescreen transform. The original
+  scenery rule widened large rays reaching the left/right edges, but missed nearly vertical rays that
+  reached only the top/bottom. Their shared edges pulled apart as the burst rotated, exposing the stage
+  behind it (reproduced with Auto-FEVER on Stage 6 at 32:9). `hw_renderer.cpp` now includes top/bottom
+  crossings with a height of at least one third of the native frame, alongside the existing horizontal
+  crossings/width threshold. The untextured and previous-frame 3D guards stay in place, keeping HUD and
+  menu art separate. Hidden hardware-renderer A/B captures verified the joined burst on Stages 4 and 6
+  at 32:9, plus Stage 6 at 21:9; the native 4:3 drawing path is unchanged.
 - **Sub-pixel vertices (no jitter)**: gte.c keeps the 1/256-px fraction of each projected SXY in a 4-way
   set-associative cache (direct-mapped collisions gave neighbouring polygons different fractions: visible
   cracks); gpu.c attaches it to every exactly matched polygon vertex (GpuVertex fx/fy) and the hardware

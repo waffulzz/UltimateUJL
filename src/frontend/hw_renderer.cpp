@@ -944,7 +944,10 @@ void draw_prim(const GpuPrim *p) {
     // which this rule would keep alive by itself in 2D menus) is scenery too: fever mode's burst background is
     // made of 2D rays from the screen center out past the edges (only the center vertex comes from the GTE, so
     // the 3D tag misses them). HUD elements stay inside the screen.
-    bool offscreen = !tex && (bx0 <= W.x || bx1 >= W.x + W.w - 1) && bx1 - bx0 >= W.w / 3; // untextured only: menus tilt large textured art past the edges
+    // Include the top/bottom edges: nearly vertical burst rays can miss both horizontal edges. Leaving
+    // those rays pillarboxed while their neighbors stretch pulls their shared edges apart in ultrawide.
+    bool offscreen = !tex && (((bx0 <= W.x || bx1 >= W.x + W.w - 1) && bx1 - bx0 >= W.w / 3) ||
+                              ((by0 <= W.y || by1 >= W.y + W.h - 1) && by1 - by0 >= W.h / 3));
     // GTE geometry projected around a center other than the screen's (HUD sprites rotated with RotTransPers
     // around their own position: the head flip and the spinning button symbols) is UI: undo the squeeze around
     // its own center and place it like 2D, instead of stretching it away from the screen center.
