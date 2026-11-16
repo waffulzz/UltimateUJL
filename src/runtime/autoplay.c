@@ -165,10 +165,18 @@ static void rhythm_fill(int ws, int we, const uint8_t *note_id, int first, int n
 #define FEVER_TABLE(p) (PBLOCK(p) + 92u)
 #define FEVER_BITS(p)  (PBLOCK(p) + 55u)
 #define fever_next (P->fever_next_)
-static int fever_split = 0x3F;   /* the codes the player being planned may enter */
 static int fever_fill(int ws, int we) {
     uint32_t t = mem_r32(FEVER_TABLE(cur_p));
     if (!guest_ptr_ok(t)) return 0;
+    /* The player's fever turn: block +12/+14 hold the slot range [start, end) in which its presses are filed into the
+       fever ring (F_8001b8b0 calls F_80017784 only for a slot below +14), 32767 outside it. Set when the window opens.
+       In versus the COOL windows alternate between the players (Stage 6: player 1 368, 432, 496; player 2 400, 464),
+       so codes entered in the other player's window were lost. */
+    int f0 = (int16_t)mem_r16(PBLOCK(cur_p) + 12u), f1 = (int16_t)mem_r16(PBLOCK(cur_p) + 14u);
+    if (f0 == NO_WINDOW || f1 == NO_WINDOW) return 0;
+    if (we > f1 - 1) we = f1 - 1;
+    if (ws < f0) ws = f0;
+    if (we - ws < 8) return 0;
     uint8_t codes[6][16];
     int len[6];
     for (int k = 0; k < 6; k++) {
@@ -186,12 +194,11 @@ static int fever_fill(int ws, int we) {
        as empty when the window opens; seen with Stage 1's L1 code at slot 320). The first beat gets one press. */
     /* Order: the fevers not running yet first (bits at block +55; a code that missed, e.g. on a jump of the song clock,
        comes back in the next window), then the rest in turn, which refreshes their timers. */
-    /* With both players autoplayed the six fevers are split between them (player 1 codes 1, 3, 5, player 2 codes
-       2, 4, 6): each colour goes to one player only, so when both entered the same codes one took nearly all of them
-       (Stage 3 versus: player 2 got one; Stage 6 co-op: Lammy got none). */
+    /* Each player has its own six fevers (versus and co-op: both reach all six). An earlier split of the colours
+       between the players worked around codes lost outside the player's fever turn (see above). */
     int order[6], n = 0, active = mem_r8(FEVER_BITS(cur_p));
-    for (int j = 0; j < 6; j++) { int k = (fever_next + j) % 6; if ((fever_split >> k & 1) && !(active >> k & 1)) order[n++] = k; }
-    for (int j = 0; j < 6; j++) { int k = (fever_next + j) % 6; if ((fever_split >> k & 1) && (active >> k & 1)) order[n++] = k; }
+    for (int j = 0; j < 6; j++) { int k = (fever_next + j) % 6; if (!(active >> k & 1)) order[n++] = k; }
+    for (int j = 0; j < 6; j++) { int k = (fever_next + j) % 6; if (active >> k & 1) order[n++] = k; }
     int s = (ws + 3) & ~3;
     if (s - ws < 2) { plan_add(s, codes[order[0]][1] ? codes[order[0]][1] : 1); s += 4; }
     int prev_end = -100;
@@ -322,6 +329,10 @@ static void make_plan(int ws, int we) {
        press, no note-count penalty, the rhythm bonus; presses >= window length + 3 void it). Only in COOL: outside
        it an empty window would score every press as a wrong button. */
     int cool = (int16_t)mem_r16(meter_addr(cur_p)) <= 2;
+    /* Versus COOL turns: the windows open for both players, but only the player whose turn it is has a fever range
+       (block +12). The other one rests: its freestyle presses ran up a score lead that ended Stage 6 versus early. */
+    if (mem_r32(PLAY_MODE) == 1 && first < 0 && (int16_t)mem_r16(PBLOCK(cur_p) + 12u) == NO_WINDOW
+        && (int16_t)mem_r16(PBLOCK(cur_p ^ 1) + 12u) != NO_WINDOW) return;
     if (first < 0 && !cool) return;
     /* Fever codes: the fever check runs whenever the game has handed the player a fever table, and at COOL the scorer
        takes its no-teacher path (any button counts, F_80018354 with rating 0), so the codes can replace a line's
@@ -341,13 +352,14 @@ static void make_plan(int ws, int we) {
 
 /* One player's buttons for this vblank (active high): plans each answer window when it opens, then presses on time.
    Press timing: the game logic runs every second vblank; it advances the song time, then reads the pad and stamps a
-   press with the new time. The steps alternate (about 7, 5, 7, 5, now and then 8), so the next one is about 12 minus
-   the last. The scorer rounds (tick of t + 12) and accepts about +-8 units around a slot, but the fever ring files a
+   press with the new time. The steps come in repeating pairs whose sum follows the tempo (Stage 1 7, 5; Stage 6 5, 8;
+   now and then 7, 6, 7), so the next step is predicted as the one before the last (12 minus the last was a unit or
+   more off in Stage 6). The scorer rounds (tick of t + 12) and accepts about +-8 units around a slot, but the fever ring files a
    press under floor(t / 24) and resets itself on a press outside tick 1-4: a fever press must be stamped in
-   [slot * 24, slot * 24 + 7]. So the press goes on the logic frame whose predicted stamp is closest to slot * 24 + 2
-   (early in that range: room for a jump of the song clock). */
+   [slot * 24, slot * 24 + 7]. So the press goes on the logic frame whose predicted stamp is closest to the middle of
+   that range, slot * 24 + 3.5. */
 static int32_t t_now;
-static int step_last = 6;
+static int step_last = 6, step_prev = 6;
 static uint32_t g_gpu_frame_now;
 static uint16_t player_buttons(int p, int port) {
     P = &players[p];
@@ -365,7 +377,7 @@ static uint16_t player_buttons(int p, int port) {
         P->ws = ws; P->we = we;
         make_plan(ws, we);
         if (log_on) {
-            char b[512]; int k = 0;
+            char b[512]; int k = 0; b[0] = 0;
             for (int i = 0; i < nplan && k < 480; i++) k += snprintf(b + k, sizeof b - (size_t)k, " %d:%d", plan[i].slot, plan[i].id);
             rt_log("autoplay: P%d window %d..%d, %d presses:%s", p + 1, ws, we, nplan, b);
         }
@@ -395,12 +407,9 @@ static uint16_t player_buttons(int p, int port) {
     }
     if (P->hold_frames > 0) { P->hold_frames--; return P->hold_mask; }
     if (ws == NO_WINDOW) return 0;
-    int est = 12 - step_last;
+    int est = step_prev;
     if (est < 4) est = 4;
-    if (est > 8) est = 8;
-    /* Controller 2's presses are stamped one logic step earlier than controller 1's (with the time before the game's
-       next update; seen in its fever ring: a press planned for slot 228 filed under 227), so for port 2 the stamp is
-       predicted as the current time. */
+    if (est > 9) est = 9;
     int32_t corr = (int32_t)(P->corr + (P->corr >= 0 ? 0.5f : -0.5f));
     int32_t stamp_now = t_now + est + corr, stamp_after = stamp_now + step_last; (void)port;
     for (int i = 0; i < nplan; i++) {
@@ -408,10 +417,14 @@ static uint16_t player_buttons(int p, int port) {
         if (q->done) continue;
         int32_t target = q->slot * SLOT_UNITS + 2;
         if (t_now > target + SLOT_UNITS) { q->done = 1; continue; }   /* missed (joined mid-window) */
-        int32_t dn = stamp_now - target, da = stamp_after - target;
+        /* Distances in half units to the middle of the fever ring's range (slot * 24 + 3.5): the prediction is good to
+           about +-2 units, so aiming at + 2 filed some presses a slot early (Stage 6 versus: stamped 9092 for slot
+           379, which starts at 9096, breaking the code). */
+        int32_t mid2 = 2 * q->slot * SLOT_UNITS + 7;
+        int32_t dn = 2 * stamp_now - mid2, da = 2 * stamp_after - mid2;
         if (dn < 0) dn = -dn;
         if (da < 0) da = -da;
-        if (stamp_now < target && da < dn) continue;                  /* the next logic frame lands closer */
+        if (2 * stamp_now < mid2 && da < dn) continue;                /* the next logic frame lands closer */
         if (stamp_now < target - SLOT_UNITS / 2) continue;
         q->done = 1;
         if (log_on > 1) rt_log("autoplay: P%d press slot %d at t %d (vblank %u)", p + 1, q->slot, t_now, (unsigned)g_gpu_frame_now);
@@ -456,17 +469,14 @@ uint16_t autoplay_buttons(int port) {
     static int32_t t_last = INT32_MIN;
     t_now = (int32_t)mem_r32(SONG_TIME);
     if (t_now != t_last) {
-        if (t_last != INT32_MIN && t_now > t_last && t_now - t_last < 16) step_last = t_now - t_last;
+        if (t_last != INT32_MIN && t_now > t_last && t_now - t_last < 16) { step_prev = step_last; step_last = t_now - t_last; }
         t_last = t_now;
     }
     uint32_t active = mem_r32(ACTIVE_MASK);
-    int driven = 0;
-    for (int p = 0; p < 2; p++) driven += mem_r8(SOURCE(p)) <= 1;   /* co-op alternates the active bit per turn */
     for (int p = 0; p < 2; p++) {
         uint8_t src = mem_r8(SOURCE(p));
         if (src > 1 || !(active >> p & 1)) continue;
         g_autoplay_used = 1;
-        fever_split = driven == 2 ? (p == 0 ? 0x15 : 0x2A) : 0x3F;
         out[src] |= player_buttons(p, src);
     }
     return out[port];

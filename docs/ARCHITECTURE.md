@@ -424,8 +424,10 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     floor(time / 24) in a 32-slot ring (block +57) and resets the ring on a press outside tick 1-4; F_800178b0
     compares the last 8 slots with each code at every slot boundary and on a match sets fever bit k (block +55),
     a 4-phrase timer (block +90) and resets the ring. So a fever press must be stamped in [slot*24, slot*24 + 7]:
-    the press goes on the logic frame whose predicted stamp (the time steps alternate ~7/5, next ~ 12 - last) is
-    closest to slot*24 + 2. Codes are played back to back from the window's second beat (a code on the first slot
+    the press goes on the logic frame whose predicted stamp is closest to the middle, slot*24 + 3.5 (aiming at + 2
+    filed some presses a slot early). The time steps come in repeating pairs set by the tempo (Stage 1 7/5, Stage 6
+    5/8, sometimes 7/6/7), so the next step is predicted as the one before the last ("12 - last" was 1+ units off in
+    Stage 6). F_80017784 also resets the ring when a slot that already holds a press gets another. Codes are played back to back from the window's second beat (a code on the first slot
     missed), a beat of rest before a code that starts with a press (the post-match reset ate it), the fevers not yet
     running first so a miss is retried. Stage 1: all six stack in the first COOL section; in the second a code can
     miss on a jump of the song clock (CD timing, e.g. +31 units at slot 711) with no window left to retry.
@@ -454,9 +456,16 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     game stamps presses at about the decision time, where solo stamped them ~6 units later. A fixed prediction filed
     2P fever presses a slot early (notes still scored, fevers failed). Press timing now calibrates itself: after each
     press it finds the recorded stamp in the player's tick grid (0x801a2410 + 396p) and keeps a running correction
-    (settles near -3 solo, -4 in 2P co-op). Each fever colour goes to one player, so with both players autoplayed the
-    codes are split: player 1 Triangle/Cross/L1, player 2 Circle/Square/R1 (counted by input source, not the active
-    bit, which alternates in co-op). Stage 3 real 2P co-op: each player got its three fevers.
+    (settles near -3 solo, -4 in 2P co-op).
+  - Fever turns: F_8001b8b0 files a press into the fever ring only while its slot is below block +14; block +12/+14
+    hold the player's fever range [start, end), 32767 outside it, set as the window opens (+8 bit 0x80 too). In 2P
+    the COOL windows open for both players but alternate as fever turns (Stage 6: player 1 368, 432, 496; player 2
+    400, 464), so codes entered in the other player's window were lost; Auto-FEVER enters codes only inside the
+    range. Each player has its own six fevers (an earlier colour split between the players only worked around the
+    lost codes). In versus the player whose turn it isn't rests: its freestyle presses ran up a score lead that ended
+    the match early (KO at slot 431). Checked: Stage 6 versus (COMOD6.CMP, COMOD16.CMP) 5-6 fevers each until the
+    match ends at slot 527 (was 2 and 0); Stage 6 and Stage 3 co-op both players all six; Stage 1 solo and PaRappa
+    Stage 3 solo all six; Stage 1 Autoplay GOOD.
   - After an autoplayed song the system-save and replay-save screens are skipped (hook_menu_screen, pre-hook on the
     menu overlay's screen dispatcher O00_801c99c4: the screen loop O00_801c5f44 calls it with the screen number and
     it returns the next). Screens: 10 name entry, 30 a step after it, 27 SYSTEM SAVE, 28 REPLAY SAVE, 31/29 replay,
