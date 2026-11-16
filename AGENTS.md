@@ -4,11 +4,12 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## What this is
 
-A PC port of Um Jammer Lammy built by **static recompilation**: the PS1 executable and its code overlays are
-translated MIPS → C, then compiled with clang against a hand-written PS1 hardware/BIOS layer. The base game is the
-JP disc (`SCPS_180.11`) and must boot and play with only that disc. The USA disc (`SCUS_944.48`), when present, is
-used purely as an asset source: English logo, tooltips, memory card text and the credits song. Every game asset is read
-from the user's own disc images at runtime.
+**Ultimate Um Jammer Lammy** (UltimateUJL): a PC port of Um Jammer Lammy built by **static recompilation**: the PS1
+executable and its code overlays are translated MIPS → C, then compiled with clang against a hand-written PS1
+hardware/BIOS layer. The base game is the JP disc (`SCPS_180.11`) and must boot and play with only that disc. The
+USA disc (`SCUS_944.48`), when present, is used purely as an asset source: English logo, tooltips, memory card text,
+the credits song and the optional censored Stages 1, 5 and 6. Every game asset is read from the user's own disc
+images at runtime.
 
 `docs/ARCHITECTURE.md` is the running engineering notebook: findings, addresses, root causes, the to-do queue. Read the
 relevant section before touching a subsystem, and add a note when you learn something non-obvious.
@@ -92,7 +93,10 @@ There's no unit test suite. Verification means running the game headless or scri
   `cross`.
 - Runtime stats/A-B switches (all env vars): `UJL_CD_STATS`, `UJL_FLIP_STATS`, `UJL_GTE_STATS`, `UJL_SUBPIX_STATS`,
   `UJL_WAIT_STATS`, `UJL_FAST_LOAD`, `UJL_SOFT_RASTER`, `UJL_FORCE_RATING`, `UJL_FORCE_SCENE` (8,3 = staff roll from Stage 1), `UJL_NCLIP_INT` (integer-only backface test), and
-  `UJL_JP_*` to disable each English patch. `UJL_FORCE_RATING=1` keeps a stage at GOOD (BAD distorts the picture).
+  `UJL_JP_*` to disable each English patch. `UJL_FORCE_CENSORED=1` serves the USA (censored) Stages 1, 5 and 6
+  (`censor.c`; the setting "Uncensored content" is on by default because the JP release is uncensored). Setup wizard: `UJL_SETUP=1` forces it, `UJL_SETUP_SHOTS=1` saves each
+  page and quits, `UJL_SETUP_DROP="a;b"` drops files on it; scripted runs skip it and, once `setup_done=1` is in
+  ujl.ini, use only the discs imported there. `UJL_FORCE_RATING=1` keeps a stage at GOOD (BAD distorts the picture).
   The game log is `build/cmake/ujl.log`.
 
 ## Architecture (big picture)
@@ -141,6 +145,8 @@ sectors (`patch_sector`), so the JP code sees modified data with no code changes
   game's English font.
 - US logo injection (`title_logo_filter`).
 - The credits song: channel 7 of `ST1.XA` from the USA disc, audio payload only.
+- Censored content (`censor.c`, setting off only): USA song vocals, lyric lines, archive entries and the Stage 6
+  movie for Stages 1, 5 and 6. Notes in docs/ARCHITECTURE.md (To do, "Uncensored content toggle").
 
 ## Shell gotchas
 

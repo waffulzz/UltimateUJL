@@ -30,6 +30,9 @@ static bool read_boot_name(char boot[64]) {
     return boot[0] != 0;
 }
 
+/* Entry point of the executable this build was recompiled from (the setup wizard's disc check). */
+uint32_t rt_recomp_entry(void) { return RECOMP_ENTRY_ADDR; }
+
 /* Does this image boot the executable this build was recompiled from? */
 bool rt_probe_disc(const char *path) {
     if (!disc_open(path)) return false;

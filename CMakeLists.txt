@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(ujl_pc C CXX)
+project(UltimateUJL C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -40,6 +40,7 @@ set(RUNTIME_SOURCES
   src/runtime/cdrom.c
   src/runtime/disc.c
   src/runtime/patch.c
+  src/runtime/censor.c
   src/runtime/language.c
   src/runtime/title_logo.c src/runtime/button_swap.c
   src/runtime/spu.c
@@ -76,7 +77,7 @@ if(WIN32)
   enable_language(RC)
   set(UJL_ICON_RC assets/icon/ujl.rc)   # exe icon (tools/make_icon.py builds ujl.ico from the user's art)
 endif()
-add_executable(ujl src/frontend/main.cpp src/frontend/gl_funcs.cpp src/frontend/hw_renderer.cpp ${UJL_ICON_RC})
+add_executable(ujl src/frontend/main.cpp src/frontend/discs.cpp src/frontend/gl_funcs.cpp src/frontend/hw_renderer.cpp ${UJL_ICON_RC})
 target_link_libraries(ujl PRIVATE runtime imgui OpenGL::GL)
 if(APPLE)
   # macOS ships OpenGL 4.1 core, deprecated but working; keep the build log quiet about it

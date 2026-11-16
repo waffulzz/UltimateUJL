@@ -655,6 +655,7 @@ void patch_init(void) {
     if (g_patch_english_mc) english_mc_messages();
     if (g_patch_english_captions) english_captions();
     if (g_patch_english_credits_song) english_credits_song();
+    { void censor_init(void); censor_init(); }   /* censor.c: USA versions of Stages 1, 5 and 6 (setting) */
 }
 
 /* Staff roll length: the JP roll (COMOD8.SNG) ends ~82 s into the song, when its timeline raises event bit 0x100
@@ -712,6 +713,7 @@ void patch_sector(uint32_t lba, uint8_t sec[2352]) {
             memcpy(sec + 16, us + 16, 2352 - 16);
         return;
     }
+    { int censor_sector(uint32_t lba, uint8_t sec[2352]); if (censor_sector(lba, sec)) return; }
     for (int i = 0; i < nfiles; i++) {
         PatchedFile *f = &files[i];
         if (lba >= f->lba && lba < f->lba + f->nsec) {

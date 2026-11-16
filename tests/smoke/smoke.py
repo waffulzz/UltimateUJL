@@ -217,7 +217,7 @@ def make_exe(code):
     hdr[0:8] = b"PS-X EXE"
     struct.pack_into("<4I", hdr, 0x10, BASE, 0, BASE, len(body))
     struct.pack_into("<2I", hdr, 0x30, 0x801FFF00, 0)
-    hdr[0x4C:0x4C + 21] = b"ujl-pc CI smoke test\0"
+    hdr[0x4C:0x4C + 21] = b"UltimateUJL CI smoke\0"
     return bytes(hdr) + body
 
 # ---------------------------------------------------------------- ISO9660 Mode2/2352 image

@@ -1,4 +1,4 @@
-# UJL-PC architecture (working notes)
+# Ultimate Um Jammer Lammy (UltimateUJL) architecture (working notes)
 
 ## Pipeline
 1. `tools/psxdisc.py` reads the user's own disc images (Mode2/2352 ISO9660). Nothing from the discs is shipped.
@@ -28,11 +28,18 @@ Both load at 0x80010000. Code ends around 0x80054e88 (JP); data follows. PsyQ 19
 - Arcade (UJL NOW!, Namco System 12) CD: `MOVIE/AM01..AM06.IKI` (new cutscenes), `XA/JOE1..6.XA` (Joe Chin
   voice), `MOVIE/NAMCO.IKI`, `ASOBI.IKI`. Arcade program/charts are in the `ul1rom*` flash ROMs.
 
-## Status (2026-11-14)
-Boots from the JP disc and runs the full attract loop: logo, intro FMV, lobby FMV, Stage 1 story FMV with
-subtitles, title movie, title screen ("NEW GAME / MENU"), LOADING screen, and the Stage 3 gameplay demo
-(COMOD3.COP, about 1000+ prims per frame through the software rasterizer). Then it loops. Sound output works
-(SPU voices + XA through SDL). No reverb or noise yet, and no high-res/widescreen renderer yet.
+## Status (2026-11-15)
+Project name: **Ultimate Um Jammer Lammy** (UltimateUJL). The whole game plays from the JP disc alone: attract
+loop, menus, story mode, every stage in solo, versus and co-op, PaRappa mode, the staff roll, memory card saves.
+Sound: SPU voices, reverb and XA through SDL (no SPU noise yet). Two renderers: the software rasterizer (original
+320x240) and the OpenGL hardware renderer (up to 8x internal resolution, MSAA, smooth textures, sub-pixel
+vertices, widescreen up to 32:9 with the menus pillarboxed; movies stay native 4:3). Builds on Windows, macOS
+and Linux; CI runs a disc-free smoke test on all three.
+With the USA disc imported (first-run setup wizard, Settings > Discs): English title logo, menus, tooltips,
+memory card messages and credits song, plus the option to switch Stages 1, 5 and 6 to the censored USA versions
+("Uncensored content", on by default). Also: instant loading, unlock-all, confirm with Cross.
+Open: SPU noise, the credits-screen line (user report, not reproduced), the arcade (UJL NOW!) features, pause
+screen, autoplay; see To do.
 Probe: `ujl_probe.exe -t SECS -shot -wav -press T:BTN ...` → build/shots/tNNN.bmp, audio.wav.
 
 Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build build/cmake`
@@ -113,7 +120,8 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   USA-only 4bpp images (tail of USA S0/CMP0.INT, CLUTs 752,0/2/3). At the GPU-primitive level the JP lettering
   (tpage 512,0 4bpp, CLUT 560,7/8) is replaced by that mesh and the JP flames (8bpp tpage 960,0, CLUT 576,511)
   are dropped. The images are read at runtime from the user's USA disc, which the frontend locates next to the
-  JP disc (`search_usa_disc`). Without it, the title keeps the shared emblem.
+  JP disc (`search_usa_disc`; since the setup wizard, the USA disc imported in ujl.ini). Without it, the title keeps
+  the shared emblem.
 - **Function discovery**: overlay code reached only through pointers (e.g. COMOD11.SNG 0x801c6de0, the Stage 1
   crash) is accepted when it looks like a function start: it follows `jr ra`/`j`/an unconditional branch (+ nop
   padding), or it opens with `addiu sp,sp,-N`.
@@ -340,14 +348,23 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   hold at ~136 s, fade at ~198 s, Stage Select at ~201 s.
 
 ## To do
-- **Setup wizard (first run)**: imports the user's discs and gates features on what was imported.
-  Required: JP disc (SCPS_180.11). Optional: USA disc (English title logo), arcade UJL NOW! CD/ROMs
-  (attract movies, Joe Chin cutscenes, Stage 1 versus/PaRappa content), and maybe Europe/prototype later. Each disc is verified
-  (SYSTEM.CNF / file hashes), remembered in ujl.ini, and each optional feature shows as locked with
-  "needs the X disc" until imported. Styled like the game's own menus (the MilkCan candy-bar cards), not
-  ImGui. The first screen (before any disc) is drawn procedurally in that style. Once the JP disc is imported,
-  later steps use the real menu art read from it at runtime (never shipped). Also reachable from settings
-  ("Manage discs").
+- **Setup wizard (done, src/frontend/discs.cpp)**: ImGui pages Welcome -> Japanese disc -> optional discs -> summary,
+  shown before boot on the first start (no `setup_done` in ujl.ini), whenever the JP image can't be found, or with
+  UJL_SETUP=1; also Settings > Discs > "Manage discs..." in game (changes apply on restart). Never shown under
+  UJL_SCRIPT. Files can be picked (.bin/.img/.iso, or the .cue/.ccd next to one) or dragged onto the window; each is
+  identified from its contents and put in its slot whichever button picked it:
+  - JP: the boot exe's entry point equals this build's (rt_recomp_entry), so it works for the smoke build too.
+  - USA: SCUS_944.48 with exe CRC-32 30FFBCE1.
+  - Europe (SCES_017.53) and the Jan 22 1999 prototype ("Previewable" image: boots SCPS_180.11, entry 8002def4, exe
+    CRC FED6B0F3) are recognized and rejected with an explanation.
+  - UJL NOW! CD (CloneCD .img, no SYSTEM.CNF): MOVIE/AM01.IKI + MOVIE/NAMCO.IKI + XA/JOE1.XA.
+  - ROM set (MAME "ujlnow"): CRC-32 + size of the 10 ul1* board ROMs, read from a zip's central directory (no
+    unzipping) or a folder (or any file in it). The CHD isn't needed.
+  ujl.ini keys: disc, usa_disc, arcade_cd, arcade_roms, setup_done. After setup only imported discs count (the USA
+  auto-search next to the JP image only runs before setup, e.g. scripted runs on a fresh ini). Each optional feature
+  shows as On / Coming soon / "Needs the X disc". Dev: UJL_SETUP_DROP="a;b" drops files at start, UJL_SETUP_SHOTS=1
+  saves each page to shots/setup_pN.bmp and quits (=save: saves and boots); setup: lines in ujl.log give each
+  identification.
 - **JP disc alone is enough to play (done)**. Only the NTSC-J (SCPS_180.11) image is required; boot and the file
   picker only ask for it. Every USA-disc feature (English logo, menu TIMs, tooltip words, memory card text, credits
   song) checks aux_disc_ready() and is skipped without it, and the JP title lettering is only blanked when the
@@ -355,7 +372,33 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   ujl.ini usa_disc (checked before the auto-search, used from the next start).
 - High-res/widescreen/ultrawide GL renderer (FMV stays 4:3 native); texture modes (vectorized HQ / original).
 - Autoplay + Auto-COOL, both watermarking gameplay.
-- Uncensor toggle (JP S6/S7 differences), Stage 1 versus/PaRappa restoration, UJL NOW! Joe Chin cutscenes.
+- **Uncensored content toggle (done, src/runtime/censor.c)**: the JP release is the uncensored one, so the setting
+  defaults to on; off (needs the USA disc) serves the USA versions of Stages 1, 5 and 6 through the sector patch
+  layer, applied from the next stage loaded (ini `uncensored`, UJL_FORCE_CENSORED=1 in the probe). Disc comparison
+  (Stages 2, 3, 4 and 7 have no censorship differences; every overlay and archive also differs for English-only
+  reasons, so Stage 2 was the control):
+  - Song XA: ST1/ST5/ST6.XA same size and layout on both discs; S1 channels 2-4 and 6 differ in 52 sectors each
+    (channel 7 = credits song, handled by the credits patch), S5/S6 channels 2-7 in 100-270 sectors. Audio sectors
+    are copied from the USA file, headers kept (song clock).
+  - Lyrics: one English lyric timeline per song overlay differs in a few records (identical timing): COMOD1.SNG 1,
+    COMOD11.SNG 2, COMOD5.SNG 8, COMOD15.SNG 3, COMOD6.SNG 8, COMOD16.SNG 2 (+ the CMP/COP variants). USA overlays
+    load at 0x801c5750 (JP 0x801c5110). The USA lines (some are longer) go into a pool at 0x80005000 (kernel RAM the
+    HLE BIOS leaves free, 0x5000-0x6FFF) and the records point there. Checked in RAM: the loaded record points into
+    the pool, which holds the line.
+  - Archives (CMP*.INT): sections = {type, count, data sectors, ?} header + 20-byte {size, name} entries, padded to
+    0x2000, then the data; the next section follows. The game has no entry names in its code (index access), so
+    each JP index keeps its meaning: same-named entries get the USA data, JP-only entries (MVST*SQ.TIM, the Japanese
+    caption sheet) lend their slot to USA-only ones (Stage 6: LA12.TIM, the camo boot), the rest are appended if
+    they fit. A section that outgrows its space grows into the 8 KB free at the end of the file and the later
+    sections move down (the loader walks the headers: checked in Stage 6 PaRappa and co-op). Contents: S5/S6 voice
+    sample banks (S5RR_R/S6RR_R .VB/.VH), Lammy's Stage 6 camo outfit (LA06/09/10/11 + LA12, LA.TMD, *.DAT),
+    Stage 1 animations (*_TI.TOD, ON_TO2.TOD). The USA-only face textures (F_LA*.TIM) don't fit and are left out.
+  - Stage 6 movie: S6.IKI re-encoded on the USA disc (1964 frames vs 2043, every frame different). The game calls
+    StSetStream (F_80030694) with end frame -1; the movie loop (F_8001688c/F_800169ac) ends after frame
+    `directory size / 20480 - 5` (JP 2043, USA 1964), so the USA stream is served from the JP file's start, its
+    end-of-file sector repeats past its end, and the /S6 directory record reports the USA size. Not yet watched in
+    game (the probe's menu timing kept landing in the attract loop instead of Stage 6 story).
+- Stage 1 versus/PaRappa restoration, UJL NOW! Joe Chin cutscenes.
 - A real pause screen, separate from the "AGAIN?" prompt (the JP game reuses AGAIN? when Start is pressed
   mid-song): resume / retry / quit / settings, drawn by the port.
 - Setting: play the UJL NOW! arcade attract movies (arcade CD MOVIE/*.IKI) in the attract loop (needs the

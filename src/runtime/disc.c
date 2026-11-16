@@ -118,6 +118,40 @@ bool aux_disc_read_file(const char *path, uint8_t **data, uint32_t *size) { retu
 bool aux_disc_find_file(const char *path, uint32_t *lba, uint32_t *size) { return aux_disc.f && img_find_file(&aux_disc, path, lba, size); }
 bool aux_disc_read_sector(uint32_t lba, uint8_t out[2352]) { return img_read_sector(&aux_disc, lba, out); }
 
+/* Identification (setup wizard): read the primary volume descriptor or one file of any image without touching the
+   main or auxiliary disc. False for unreadable files and images without raw 2352-byte Mode 2 sectors. */
+static bool img_open_checked(DiscImg *d, const char *path) {
+    if (!img_open(d, path)) return false;
+    static const uint8_t sync[12] = {0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0};
+    uint8_t sec[2352];
+    if (d->sectors > 16 && img_read_sector(d, 16, sec) && !memcmp(sec, sync, 12)) return true;
+    fclose(d->f);
+    d->f = NULL;
+    return false;
+}
+bool disc_image_pvd(const char *path, uint8_t pvd[2048]) {
+    DiscImg d = {0};
+    if (!img_open_checked(&d, path)) return false;
+    bool ok = read_data(&d, 16, pvd, 2048) && !memcmp(pvd + 1, "CD001", 5);
+    fclose(d.f);
+    return ok;
+}
+bool disc_image_read_file(const char *path, const char *file, uint8_t **data, uint32_t *size) {
+    DiscImg d = {0};
+    if (!img_open_checked(&d, path)) return false;
+    bool ok = img_read_file(&d, file, data, size);
+    fclose(d.f);
+    return ok;
+}
+bool disc_image_has_file(const char *path, const char *file) {
+    DiscImg d = {0};
+    if (!img_open_checked(&d, path)) return false;
+    uint32_t lba, size;
+    bool ok = img_find_file(&d, file, &lba, &size);
+    fclose(d.f);
+    return ok;
+}
+
 /* Does `path` boot the given executable name (e.g. "SCUS_944.48")? Uses the aux slot temporarily. */
 bool disc_image_boots(const char *path, const char *exe_name) {
     DiscImg d = {0};

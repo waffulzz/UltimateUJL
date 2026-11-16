@@ -1,4 +1,4 @@
-// UJL-PC frontend: SDL3 window, input, ImGui overlay. The recompiled game runs on its own thread.
+// Ultimate Um Jammer Lammy (UltimateUJL) frontend: SDL3 window, input, ImGui overlay. The recompiled game runs on its own thread.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_opengl.h>
@@ -17,6 +17,7 @@
 #include "gl_funcs.h"
 #include "app_icon.h"
 #include "hw_renderer.h"
+#include "discs.h"
 
 extern "C" {
 #include "psx.h"
@@ -35,6 +36,8 @@ int memcard_list(int slot, char names[][21], int *blocks, int max);
 int memcard_free_blocks(int slot);
 const char *memcard_path(int slot);
 extern int g_unlock_all;
+extern int g_uncensored;                  // censor.c: 1 = JP (uncensored) content, 0 = the USA disc's Stages 1/5/6
+int censor_available(void);               // censor.c: the USA disc is there to switch to
 extern "C" SDL_Thread *rt_create_thread(SDL_ThreadFunction fn, const char *name, void *data); // bios.c: big-stack thread
 extern "C" int g_cd_fast_load;            // cdrom.c: fast data loading + loading turbo (setting "fast_load")
 extern "C" int rt_load_turbo_active(void); // cpu.c: the emulation is fast-forwarding through a load
@@ -190,11 +193,7 @@ static void SDLCALL card_pick_cb(void *, const char *const *files, int) {
 
 // ---------------------------------------------------------------- discs (settings "Discs" section)
 static std::string g_jp_disc_path, g_usa_disc_path;   // what this session booted / opened ("" = none)
-static std::atomic<int> g_usa_pick{0};                 // 1 = a file was picked in the USA disc dialog
-static std::string g_usa_pick_path, g_usa_pick_msg;
-static void SDLCALL usa_pick_cb(void *, const char *const *files, int) {
-    if (files && files[0]) { g_usa_pick_path = files[0]; g_usa_pick = 1; }
-}
+static DiscSetup g_discs;                              // what ujl.ini lists (the wizard may change it mid-session)
 
 // ---------------------------------------------------------------- input
 // PS1 digital pad bits (active low)
@@ -275,7 +274,7 @@ static uint16_t pad_held(SDL_Gamepad *pad) {
 }
 
 // ---------------------------------------------------------------- finding the disc
-static std::string g_base_dir;   // folder containing the exe
+std::string g_base_dir;   // folder containing the exe
 
 static std::string ini_path() { return g_base_dir + "ujl.ini"; }
 
@@ -295,12 +294,12 @@ static std::vector<std::pair<std::string, std::string>> ini_load() {
     return kv;
 }
 
-static std::string ini_get(const char *key, const std::string &def = "") {
+std::string ini_get(const char *key, const std::string &def) {
     for (auto &p : ini_load()) if (p.first == key) return p.second;
     return def;
 }
 
-static void ini_set(const char *key, const std::string &val) {
+void ini_set(const char *key, const std::string &val) {
     auto kv = ini_load();
     bool found = false;
     for (auto &p : kv) if (p.first == key) { p.second = val; found = true; }
@@ -311,8 +310,6 @@ static void ini_set(const char *key, const std::string &val) {
     fclose(f);
 }
 
-static std::string ini_get_disc() { return ini_get("disc"); }
-static void ini_set_disc(const std::string &path) { ini_set("disc", path); }
 
 static bool file_exists(const std::string &p) {
     SDL_PathInfo info;
@@ -373,24 +370,82 @@ static std::string search_usa_disc(const std::string &jp_disc) {
     return "";
 }
 
-struct PickState { std::string path; bool done = false; };
-static void SDLCALL on_pick(void *ud, const char *const *files, int) {
-    PickState *ps = (PickState *)ud;
-    if (files && files[0]) ps->path = files[0];
-    ps->done = true;
+static std::string absolute_path(const std::string &p) {
+    if (p.empty() || (p.size() > 1 && (p[1] == ':' || p[0] == '/' || p[0] == '\\'))) return p;
+    char *cwd = SDL_GetCurrentDirectory();
+    std::string r = cwd ? std::string(cwd) + p : p;
+    SDL_free(cwd);
+    return r;
 }
 
-static std::string pick_disc(SDL_Window *win) {
-    static const SDL_DialogFileFilter filters[] = {{"PlayStation disc image", "bin;img;iso"}, {"All files", "*"}};
-    PickState ps;
-    SDL_ShowOpenFileDialog(on_pick, &ps, win, filters, 2, g_base_dir.c_str(), false);
-    while (!ps.done) {
-        SDL_Event e;
-        while (SDL_PollEvent(&e))
-            if (e.type == SDL_EVENT_QUIT) return "";
-        SDL_Delay(10);
+// Save the current GL back buffer to shots/<name> next to the exe.
+static void save_shot(int fbw, int fbh, const char *name) {
+    std::vector<uint8_t> px((size_t)fbw * fbh * 4);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, fbw, fbh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    SDL_Surface *sf = SDL_CreateSurface(fbw, fbh, SDL_PIXELFORMAT_ABGR8888);
+    for (int y = 0; y < fbh; y++) memcpy((uint8_t *)sf->pixels + y * sf->pitch, &px[(size_t)(fbh - 1 - y) * fbw * 4], (size_t)fbw * 4);
+    SDL_CreateDirectory((g_base_dir + "shots").c_str());
+    SDL_SaveBMP(sf, (g_base_dir + "shots/" + name).c_str());
+    SDL_DestroySurface(sf);
+}
+
+// First-run setup (before the game boots): the wizard in its own frame loop. False = the player quit.
+// Dev: UJL_SETUP_DROP="a;b;..." drops those files on the wizard at start; UJL_SETUP_SHOTS=1 saves each page to
+// shots/setup_pN.bmp and quits without saving anything (UJL_SETUP_SHOTS=save: saves and starts the game instead).
+static bool run_setup_wizard(SDL_Window *win, const DiscSetup &start) {
+    ImGuiIO &io = ImGui::GetIO();
+    ImGuiConfigFlags saved = io.ConfigFlags;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    wizard_open(true, start);
+    if (const char *drops = getenv("UJL_SETUP_DROP")) {
+        std::string all = drops;
+        for (size_t a = 0; a < all.size();) {
+            size_t b = all.find(';', a);
+            if (b == std::string::npos) b = all.size();
+            if (b > a) wizard_drop_file(all.substr(a, b - a).c_str());
+            a = b + 1;
+        }
     }
-    return ps.path;
+    const bool shots = getenv("UJL_SETUP_SHOTS") != nullptr;
+    int frame = 0;
+    WizardResult r = WIZ_RUNNING;
+    while (r == WIZ_RUNNING) {
+        if (shots) wizard_set_page(frame / 20);
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            ImGui_ImplSDL3_ProcessEvent(&e);
+            if (e.type == SDL_EVENT_QUIT) r = WIZ_QUIT;
+            if (e.type == SDL_EVENT_DROP_FILE) wizard_drop_file(e.drop.data);
+            if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F11) {
+                bool fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN;
+                SDL_SetWindowFullscreen(win, !fs);
+            }
+        }
+        if (r != WIZ_RUNNING) break;
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
+        r = wizard_draw(win);
+        ImGui::Render();
+        int fbw, fbh;
+        SDL_GetWindowSizeInPixels(win, &fbw, &fbh);
+        glViewport(0, 0, fbw, fbh);
+        glClearColor(0.06f, 0.06f, 0.08f, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        if (shots && frame % 20 == 19) {
+            char fn[32];
+            SDL_snprintf(fn, sizeof fn, "setup_p%d.bmp", frame / 20);
+            save_shot(fbw, fbh, fn);
+            if (frame / 20 >= 3) r = (!strcmp(getenv("UJL_SETUP_SHOTS"), "save") && wizard_finish()) ? WIZ_DONE : WIZ_QUIT;
+        }
+        frame++;
+        SDL_GL_SwapWindow(win);
+        if (SDL_GetWindowFlags(win) & SDL_WINDOW_MINIMIZED) SDL_Delay(16);
+    }
+    io.ConfigFlags = saved;
+    return r == WIZ_DONE;
 }
 
 // ---------------------------------------------------------------- textures
@@ -446,7 +501,7 @@ int main(int argc, char **argv) {
     int hid_w = 0, hid_h = 0;
     if (const char *hs = getenv("UJL_SCRIPT_HIDDEN"))
         if (sscanf(hs, "%dx%d", &hid_w, &hid_h) != 2 || hid_w < 64 || hid_h < 48) hid_w = hid_h = 0;
-    SDL_Window *win = SDL_CreateWindow("Um Jammer Lammy PC", hid_w ? hid_w : 1280, hid_h ? hid_h : 960,
+    SDL_Window *win = SDL_CreateWindow("Ultimate Um Jammer Lammy", hid_w ? hid_w : 1280, hid_h ? hid_h : 960,
                                        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | (hid_w ? SDL_WINDOW_HIDDEN : 0));
     if (!win) { fprintf(stderr, "window: %s\n", SDL_GetError()); return 1; }
     if (SDL_Surface *ic = SDL_CreateSurfaceFrom(k_app_icon_w, k_app_icon_h, SDL_PIXELFORMAT_ABGR8888, (void *)k_app_icon_rgba, k_app_icon_w * 4)) {
@@ -483,31 +538,50 @@ int main(int argc, char **argv) {
         if (g_audio) SDL_ResumeAudioStreamDevice(g_audio);
         else fprintf(stderr, "audio: %s\n", SDL_GetError());
     }
+    // Discs. The setup wizard runs on the first start (no setup_done in ujl.ini), when the Japanese disc can't be
+    // found, or with UJL_SETUP=1. Scripted runs (UJL_SCRIPT) never show it. Until setup has been done once, discs
+    // are also searched for next to the game (older ujl.ini files, scripts); after it, only what was imported counts.
+    const bool scripted = getenv("UJL_SCRIPT") != nullptr;
+    bool setup_done = ini_get("setup_done") == "1";
+    g_discs = discs_from_ini();
     std::string disc;
+    disc_arg = absolute_path(disc_arg);
     if (!disc_arg.empty() && rt_probe_disc(disc_arg.c_str())) disc = disc_arg;
-    if (disc.empty()) { std::string d = ini_get_disc(); if (!d.empty() && rt_probe_disc(d.c_str())) disc = d; }
-    if (disc.empty()) disc = search_disc();
-    while (disc.empty()) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Um Jammer Lammy PC",
-            "Please select your Um Jammer Lammy (Japan) disc image (.bin / .img).", win);
-        std::string pick = pick_disc(win);
-        if (pick.empty()) return 0;
-        if (rt_probe_disc(pick.c_str())) disc = pick;
-        else SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Um Jammer Lammy PC",
-            "That image isn't the Japanese Um Jammer Lammy disc this build supports (SCPS-18011).", win);
+    if (disc.empty() && !g_discs.jp.empty() && rt_probe_disc(g_discs.jp.c_str())) disc = g_discs.jp;
+    if (disc.empty() && (!setup_done || scripted)) disc = search_disc();
+    if (!scripted && (getenv("UJL_SETUP") || !setup_done || disc.empty())) {
+        DiscSetup start = g_discs;
+        start.jp = disc;
+        if (!setup_done)   // offer what's next to the game
+            for (const DiscInfo &d : disc_search(disc_search_dirs())) {
+                if (d.kind == DISC_USA && start.usa.empty()) start.usa = d.path;
+                if (d.kind == DISC_ARCADE_CD && start.arcade_cd.empty()) start.arcade_cd = d.path;
+            }
+        if (!run_setup_wizard(win, start)) { SDL_GL_DestroyContext(gl); SDL_DestroyWindow(win); return 0; }
+        g_discs = wizard_result();
+        disc = g_discs.jp;
+        setup_done = true;
     }
-    if (!(disc.size() > 1 && (disc[1] == ':' || disc[0] == '/' || disc[0] == '\\'))) {
-        char *cwd = SDL_GetCurrentDirectory();
-        if (cwd) { disc = std::string(cwd) + disc; SDL_free(cwd); }
+    if (disc.empty()) {
+        fprintf(stderr, "disc: the Japanese Um Jammer Lammy disc (SCPS-18011) wasn't found\n");
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Ultimate Um Jammer Lammy",
+            "The Japanese Um Jammer Lammy disc image (SCPS-18011) wasn't found.", win);
+        return 1;
     }
-    ini_set_disc(disc);
+    disc = absolute_path(disc);
+    if (g_discs.jp != disc) { g_discs.jp = disc; ini_set("disc", disc); }
     g_jp_disc_path = disc;
     fprintf(stderr, "disc: %s\n", disc.c_str());
-    {   /* the USA disc (if present) supplies the English title logo, menu text and credits song */
-        std::string usa = search_usa_disc(disc);
-        if (!usa.empty() && aux_disc_open(usa.c_str())) { g_usa_disc_path = usa; fprintf(stderr, "usa disc: %s\n", usa.c_str()); }
-        else fprintf(stderr, "usa disc: not found (Japanese title logo and menus)\n");
+    {   /* the USA disc (if imported) supplies the English title logo, menu text and credits song */
+        std::string usa = setup_done ? g_discs.usa : search_usa_disc(disc);
+        if (!usa.empty() && file_exists(usa) && disc_image_boots(usa.c_str(), "SCUS_944.48") && aux_disc_open(usa.c_str())) {
+            g_usa_disc_path = usa;
+            fprintf(stderr, "usa disc: %s\n", usa.c_str());
+        } else
+            fprintf(stderr, "usa disc: %s (Japanese title logo and menus)\n", usa.empty() ? "not imported" : "missing");
     }
+    if (!g_discs.arcade_cd.empty()) fprintf(stderr, "arcade cd: %s (not used yet)\n", g_discs.arcade_cd.c_str());
+    if (!g_discs.arcade_roms.empty()) fprintf(stderr, "arcade roms: %s (not used yet)\n", g_discs.arcade_roms.c_str());
     {   /* memory card slot 1: a standard raw PS1 card image next to the exe (created blank if missing) */
         const char *sc = getenv("UJL_SCRIPT");
         if (sc && script_load(sc)) {
@@ -517,8 +591,9 @@ int main(int argc, char **argv) {
             memcard_init(0, (g_base_dir + "ujl_card1.mcd").c_str());
         memcard_init(1, nullptr);
     }
+    g_uncensored = ini_get("uncensored", "1") != "0";   // before boot: censor_init logs it (UJL_FORCE_CENSORED overrides)
     if (!rt_boot(disc.c_str())) {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "UJL-PC", "Could not boot the disc image. See console output.", win);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Ultimate Um Jammer Lammy", "Could not boot the disc image. See console output.", win);
         return 1;
     }
     g_set.renderer = ini_get("renderer", "1") == "0" ? 0 : 1;
@@ -581,6 +656,10 @@ int main(int argc, char **argv) {
                 e.type == SDL_EVENT_WINDOW_SHOWN || e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) win_hidden = hid_w != 0;
             if (e.type == SDL_EVENT_GAMEPAD_ADDED) open_pad(e.gdevice.which);
             if (e.type == SDL_EVENT_GAMEPAD_REMOVED) close_pad(e.gdevice.which);
+            if (e.type == SDL_EVENT_DROP_FILE) {   // a disc image or ROM set dropped on the window: open Manage discs with it
+                if (!wizard_active()) { wizard_open(false, g_discs); g_set.show_overlay = true; }
+                wizard_drop_file(e.drop.data);
+            }
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
                 if (e.key.key == SDLK_F1 || e.key.key == SDLK_ESCAPE) g_set.show_overlay = !g_set.show_overlay;
                 if (e.key.key == SDLK_F2) g_show_vram = !g_show_vram;
@@ -667,7 +746,7 @@ int main(int argc, char **argv) {
 
         if (g_set.show_overlay) {
             ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_FirstUseEver);
-            ImGui::Begin("UJL-PC Settings  (F1 / Esc)", &g_set.show_overlay);
+            ImGui::Begin("UltimateUJL Settings  (F1 / Esc)", &g_set.show_overlay);
             ImGui::SeparatorText("Display");
             if (!hw_ok) ImGui::BeginDisabled();
             if (ImGui::Combo("Renderer", &g_set.renderer, "Software (original 320x240)\0Hardware (high resolution)\0")) {
@@ -761,53 +840,51 @@ int main(int argc, char **argv) {
                                            "Movies, stage title cards and songs still play at normal speed.");
                     ImGui::EndTooltip();
                 }
+                {   // the JP release is the uncensored one; off = the USA disc's versions of Stages 1, 5 and 6
+                    bool can = censor_available() != 0;
+                    bool unc = g_uncensored != 0 || !can;
+                    if (!can) ImGui::BeginDisabled();
+                    if (ImGui::Checkbox("Uncensored content", &unc)) {
+                        g_uncensored = unc;
+                        ini_set("uncensored", unc ? "1" : "0");
+                    }
+                    if (!can) ImGui::EndDisabled();
+                    if (ImGui::BeginItemTooltip()) {
+                        ImGui::TextUnformatted("The Japanese release this port runs is the uncensored version.\n"
+                                               "Off: Stage 1's song and lyrics, Stage 5's vocals and lyrics, and Stage 6's\n"
+                                               "movie, vocals, lyrics and Lammy's outfit come from the USA release instead.\n"
+                                               "Applies from the next stage loaded.");
+                        if (!can) ImGui::TextColored(ImVec4(0.95f, 0.8f, 0.35f, 1), "Turning it off needs the USA disc (Settings > Discs).");
+                        ImGui::EndTooltip();
+                    }
+                }
             }
             ImGui::SeparatorText("Discs");
             {
-                auto base_name = [](const std::string &p) { return p.substr(p.find_last_of("/\\") + 1); };
+                auto base_name = [](const std::string &p) {
+                    std::string q = (!p.empty() && (p.back() == '/' || p.back() == '\\')) ? p.substr(0, p.size() - 1) : p;
+                    return q.substr(q.find_last_of("/\\") + 1);
+                };
                 const ImVec4 ok(0.45f, 0.85f, 0.45f, 1), missing(0.6f, 0.6f, 0.6f, 1);
-                ImGui::TextColored(ok, "Japan (SCPS-18011)");
-                ImGui::SameLine();
-                ImGui::TextDisabled("%s", base_name(g_jp_disc_path).c_str());
-                if (ImGui::BeginItemTooltip()) {
-                    ImGui::Text("Required. The game itself runs from this disc.\n%s", g_jp_disc_path.c_str());
-                    ImGui::EndTooltip();
-                }
-                if (!g_usa_disc_path.empty()) {
-                    ImGui::TextColored(ok, "USA (SCUS-94448)");
+                auto row = [&](const char *name, const std::string &path, const char *about) {
+                    ImGui::TextColored(path.empty() ? missing : ok, "%s", name);
                     ImGui::SameLine();
-                    ImGui::TextDisabled("%s", base_name(g_usa_disc_path).c_str());
-                } else {
-                    ImGui::TextColored(missing, "USA (SCUS-94448)");
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("not found");
-                }
-                if (ImGui::BeginItemTooltip()) {
-                    ImGui::TextUnformatted("Optional. Adds the English title logo, English menu text and tooltips,\n"
-                                           "English memory card messages, and the English credits song.\n"
-                                           "Found automatically next to the Japanese disc image.");
-                    if (!g_usa_disc_path.empty()) ImGui::Text("%s", g_usa_disc_path.c_str());
-                    ImGui::EndTooltip();
-                }
-                ImGui::SameLine();
-                if (ImGui::SmallButton(g_usa_disc_path.empty() ? "Choose..." : "Change...")) {
-                    static const SDL_DialogFileFilter filters[] = {{"PlayStation disc image", "bin;img;iso"}, {"All files", "*"}};
-                    SDL_ShowOpenFileDialog(usa_pick_cb, nullptr, win, filters, 2, nullptr, false);
-                }
-                if (g_usa_pick.exchange(0)) {
-                    if (disc_image_boots(g_usa_pick_path.c_str(), "SCUS_944.48")) {
-                        ini_set("usa_disc", g_usa_pick_path);
-                        g_usa_pick_msg = g_usa_pick_path == g_usa_disc_path ? "That's the USA disc already in use."
-                                                                            : "USA disc saved. Restart the game to use it.";
-                    } else
-                        g_usa_pick_msg = "That image isn't the USA Um Jammer Lammy disc (SCUS-94448).";
-                }
-                if (!g_usa_pick_msg.empty()) ImGui::TextWrapped("%s", g_usa_pick_msg.c_str());
-                ImGui::BeginDisabled();
-                ImGui::TextColored(missing, "UJL NOW! arcade CD");
-                ImGui::SameLine();
-                ImGui::TextDisabled("(soon)");
-                ImGui::EndDisabled();
+                    ImGui::TextDisabled("%s", path.empty() ? "not added" : base_name(path).c_str());
+                    if (ImGui::BeginItemTooltip()) {
+                        ImGui::TextUnformatted(about);
+                        if (!path.empty()) ImGui::TextUnformatted(path.c_str());
+                        ImGui::EndTooltip();
+                    }
+                };
+                row("Japan (SCPS-18011)", g_discs.jp, "Required. The game itself runs from this disc.");
+                row("USA (SCUS-94448)", g_discs.usa, "Optional. Adds the English title logo, English menu text and tooltips,\n"
+                                                     "English memory card messages, and the English credits song.");
+                row("UJL NOW! arcade CD", g_discs.arcade_cd, "Optional. Arcade attract movies, Joe Chin cutscenes and Stage 1\n"
+                                                             "versus content (coming soon).");
+                row("UJL NOW! ROM set", g_discs.arcade_roms, "Optional. Arcade guitar sounds and voice lines (coming soon).");
+                if (ImGui::Button("Manage discs...") && !wizard_active()) wizard_open(false, g_discs);
+                if (g_discs.jp != g_jp_disc_path || g_discs.usa != g_usa_disc_path)
+                    ImGui::TextColored(ImVec4(0.95f, 0.8f, 0.35f, 1), "Restart the game to use the new discs.");
             }
             ImGui::SeparatorText("Memory card");
             {
@@ -839,7 +916,6 @@ int main(int argc, char **argv) {
             bool off = false;
             ImGui::Checkbox("Autoplay (soon, watermarks gameplay)", &off);
             ImGui::Checkbox("Auto-COOL (soon, watermarks gameplay)", &off);
-            ImGui::Checkbox("Restore uncensored content (soon)", &off);
             ImGui::EndDisabled();
             ImGui::SeparatorText("Controllers");
             {
@@ -873,6 +949,7 @@ int main(int argc, char **argv) {
                         g_gpu_display.disp_x, g_gpu_display.disp_y, g_gpu_display.depth24 ? "24bpp" : "15bpp");
             ImGui::End();
         }
+        if (wizard_active() && wizard_draw(win) == WIZ_DONE) g_discs = wizard_result();
         if (g_show_vram) {
             ImGui::SetNextWindowSize(ImVec2(1040, 560), ImGuiCond_FirstUseEver);
             ImGui::Begin("VRAM (F2)", &g_show_vram);
@@ -903,16 +980,9 @@ int main(int argc, char **argv) {
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         if (int st = g_shot_req.exchange(-1); st >= 0) {
-            std::vector<uint8_t> px((size_t)fbw * fbh * 4);
-            glPixelStorei(GL_PACK_ALIGNMENT, 1);
-            glReadPixels(0, 0, fbw, fbh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-            SDL_Surface *sf = SDL_CreateSurface(fbw, fbh, SDL_PIXELFORMAT_ABGR8888);
-            for (int y = 0; y < fbh; y++) memcpy((uint8_t *)sf->pixels + y * sf->pitch, &px[(size_t)(fbh - 1 - y) * fbw * 4], (size_t)fbw * 4);
             char fn[64];
-            SDL_snprintf(fn, sizeof fn, "shots/hw_v%05d.bmp", st);
-            SDL_CreateDirectory((g_base_dir + "shots").c_str());
-            SDL_SaveBMP(sf, (g_base_dir + fn).c_str());
-            SDL_DestroySurface(sf);
+            SDL_snprintf(fn, sizeof fn, "hw_v%05d.bmp", st);
+            save_shot(fbw, fbh, fn);
         }
         if (g_script_quit) running = false;
         for (int n = g_script_overlay.exchange(0); n > 0; n--) g_set.show_overlay = !g_set.show_overlay;
