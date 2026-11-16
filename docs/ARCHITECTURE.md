@@ -215,6 +215,28 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
 - Black window: the frontend shows and raises the window at startup, stops swapping (vsync wait) while the window
   is occluded or minimized (paced with an 8 ms sleep instead), and logs "present: swap stalled N ms" if a present
   takes over 250 ms. Seen only when another app's window overlapped the game at launch; not reproducible since.
+- Slow on a Retina Mac (M2, 2560x1600 window, 2026-11-16). Three causes, all fixed:
+  - No CMAKE_BUILD_TYPE meant no optimization for anything without its own -O2: the frontend (replay), ImGui
+    and SDL were -O0. CMakeLists now defaults to Release. Menu UI rate at 7x went from ~45 to ~58 fps.
+  - "Auto" resolution matched the window's pixel height, so a Retina window got 7x (7168x3584 VRAM target, 4x
+    MSAA: ~400 MB per target). Apple's tile GPU loads and stores the whole attachment on every render-target
+    switch, and the frame switches VRAM <-> twin and resolves (sync_read) a few times per frame: Stage 1 ran
+    at 12-20 UI fps while the game thread kept 60. Measured
+    (Stage 1 UI fps avg/min): 7x no MSAA 18/5, 5x 2x 31/9, 4x 4x 49/16, 4x 2x 53/22, 3x 4x 56/48, 2x 4x 58/53, so
+    it's the scale, not MSAA. On macOS Auto now stops at 3x (the combo says so); higher scales are explicit choices.
+  - Window size changes (fullscreen transitions, the menu bar over a fullscreen window on a notched display,
+    live resize) changed the auto aspect / auto scale and freed and rebuilt the twins (or all targets) each
+    time; the picture fell back to 4:3 until rebuilt. Auto aspect and auto scale now follow the window size
+    once it has held for 0.5 s.
+  `UJL_FPS_STATS=1` logs game vblank/s, UI frames/s and the scale once a second, plus each 4:3/wide switch of
+  the shown picture ("view:"); "aspect:" lines log every change of the widescreen setting in effect.
+- Audio pitch (same machine): when the UI thread falls behind, the game thread waits in gpu_rec_vblank (up to
+  250 ms), then catches up with the host clock and the SPU's samples arrive in a burst. The output pacing
+  absorbed that by speeding playback up to +1.5%, so after each stall the queue sat above target with the speed
+  pinned at +1.5% (a quarter semitone sharp), worst in the menus. Now the speed nudge is limited to +-0.5% (clock
+  drift only) and bursts are trimmed by leaving out one 64-sample chunk in eight while over 120 ms is queued,
+  crossfaded over 32 samples (host_audio_push). `UJL_AUDIO_STATS=1` logs samples made per second, queue range,
+  average ratio and trimmed samples.
 - Not yet: sub-pixel
   vertex precision (PGXP-style: the GTE outputs integer coords, so 3D wobbles at high resolution).
 - Debug: `PROBE_RECLOG_AT=sec` logs the recorded stream of a few frames to build/reclog.txt.

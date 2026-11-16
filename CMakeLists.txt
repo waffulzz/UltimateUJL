@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.24)
 project(UltimateUJL C CXX)
 
+# Without a build type CMake adds no optimization flags: the frontend (hardware renderer replay), ImGui and SDL
+# (audio resampling, input) were built at -O0. recomp/runtime set -O2 themselves; default everything else to Release.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (default Release)" FORCE)
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 

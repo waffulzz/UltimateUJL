@@ -166,24 +166,70 @@ extern "C" void host_vblank(void) {
 static SDL_AudioStream *g_audio;
 static std::atomic<int> g_volume{100};
 
+/* Output pacing. The SPU makes samples on the emulated clock, which follows the host clock, but arrives in bursts
+   when the game thread was held up (it waits for a slow renderer in gpu_rec_vblank, then catches up). Aim for
+   ~60 ms queued:
+   - small, slow drift (host clock vs the sound card's) is absorbed by nudging the playback speed, at most +-0.5%
+     (about 9 cents, inaudible). This used to allow +-1.5%, and after every stall the queue sat above target with
+     the speed pinned at +1.5%: the music played a quarter semitone sharp, most of all in slow-rendering menus.
+   - a burst is trimmed instead: above 120 ms queued, one 64-sample chunk in eight is left out, crossfaded over
+     32 samples so it doesn't click; above 300 ms every chunk is (something stalled for good).
+   The last XF frames of each chunk are held back so a dropped chunk can be crossfaded into the next one. */
 extern "C" void host_audio_push(const int16_t *lr, int frames) {
+    enum { XF = 32, MAXF = 256 };
+    static int16_t hold[XF * 2];
+    static bool have_hold, xfade;
+    static int since_drop;
     if (!g_audio) return;
     if (rt_load_turbo_active()) return; /* fast-forwarding a load: nothing to hear */
-    /* Pace output gently: nudge playback speed (+-1.5%) to keep ~60 ms queued instead of
-       dropping chunks, which clicks. Only drop if something stalled and >300 ms piled up. */
+    if (frames > MAXF) frames = MAXF;
     int queued = SDL_GetAudioStreamQueued(g_audio) / 4;
     const int target = 44100 * 60 / 1000;
-    if (queued > 44100 * 300 / 1000) return;
-    float ratio = 1.0f + (float)(queued - target) / (float)target * 0.015f;
-    if (ratio < 0.985f) ratio = 0.985f;
-    if (ratio > 1.015f) ratio = 1.015f;
+    float ratio = 1.0f + (float)(queued - target) / (float)target * 0.005f;
+    ratio = std::max(0.995f, std::min(1.005f, ratio));
+    bool drop = have_hold && frames > XF &&
+                (queued > 44100 * 300 / 1000 || (queued > 44100 * 120 / 1000 && since_drop >= 8));
+    {   /* UJL_AUDIO_STATS: samples made vs host time, queue depth, playback ratio and trimmed samples, once a second */
+        static int st = -1; static uint64_t t0; static long made, dropped; static int qmin = 1 << 30, qmax;
+        static double rsum; static long rn;
+        if (st < 0) st = getenv("UJL_AUDIO_STATS") != NULL;
+        if (st) {
+            uint64_t now = SDL_GetTicksNS();
+            if (!t0) t0 = now;
+            made += frames; if (drop) dropped += frames;
+            qmin = std::min(qmin, queued); qmax = std::max(qmax, queued); rsum += ratio; rn++;
+            if (now - t0 >= 1000000000ull) {
+                fprintf(stderr, "audio: %.0f samples/s made, dropped %ld, queued %d..%d, ratio avg %.4f\n",
+                        made * 1e9 / (double)(now - t0), dropped, qmin, qmax, rsum / (double)rn);
+                t0 = now; made = dropped = 0; qmin = 1 << 30; qmax = 0; rsum = 0; rn = 0;
+            }
+        }
+    }
+    if (drop) { xfade = true; since_drop = 0; return; }   // keep the held tail; the next chunk fades in over it
+    since_drop++;
     SDL_SetAudioStreamFrequencyRatio(g_audio, ratio);
+    int16_t buf[MAXF * 2];
     int vol = g_volume.load();
-    if (vol == 100) { SDL_PutAudioStreamData(g_audio, lr, frames * 4); return; }
-    int16_t tmp[512];
-    int n = frames * 2 > 512 ? 512 : frames * 2;
-    for (int i = 0; i < n; i++) tmp[i] = (int16_t)(lr[i] * vol / 100);
-    SDL_PutAudioStreamData(g_audio, tmp, n * 2);
+    for (int i = 0; i < frames * 2; i++) buf[i] = vol == 100 ? lr[i] : (int16_t)(lr[i] * vol / 100);
+    if (frames <= XF) {   // too short to hold anything back (CHUNK is 64): pass through
+        if (have_hold) { SDL_PutAudioStreamData(g_audio, hold, XF * 4); have_hold = false; }
+        SDL_PutAudioStreamData(g_audio, buf, frames * 4);
+        return;
+    }
+    if (have_hold) {
+        if (xfade) {   // held tail of the last kept chunk fades out while this chunk fades in
+            for (int i = 0; i < XF; i++) {
+                float a = (i + 0.5f) / XF;
+                for (int c = 0; c < 2; c++) buf[i * 2 + c] = (int16_t)std::lround(hold[i * 2 + c] * (1.0f - a) + buf[i * 2 + c] * a);
+            }
+            xfade = false;
+        } else {
+            SDL_PutAudioStreamData(g_audio, hold, XF * 4);
+        }
+    }
+    SDL_PutAudioStreamData(g_audio, buf, (frames - XF) * 4);
+    memcpy(hold, buf + (frames - XF) * 2, XF * 4);
+    have_hold = true;
 }
 
 // ---------------------------------------------------------------- memory card import (file dialog)
@@ -605,11 +651,25 @@ int main(int argc, char **argv) {
     GLint max_tex = 4096;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex);
     int max_scale = std::max(1, std::min(8, (int)max_tex / 1024));
+    // Auto aspect and auto resolution follow the window size once it has held for half a second. Every change
+    // reallocates the render targets and wide twins (hundreds of MB at high scales): a fullscreen transition, the
+    // menu bar sliding over a fullscreen window on a notched Mac (2560x1664 <-> 2560x1600) or a live resize used to
+    // rebuild them over and over, the picture flipping between 4:3 and wide with a hitch each time.
+    int settled_w = 0, settled_h = 0;
+    SDL_GetWindowSizeInPixels(win, &settled_w, &settled_h);
+    int pend_w = settled_w, pend_h = settled_h;
+    uint64_t pend_t = 0;
+#ifdef __APPLE__
+    // Auto on a Mac stops at 3x. A Retina window asked for 7x (a 7168x3584 VRAM target): Stage 1 ran at 12-20 fps
+    // on an M2 (Apple's GL sits on Metal and its tile GPU loads/stores whole targets on every switch); 4x still
+    // dipped to ~16 fps, 3x holds 56-60 like 2x. Higher scales stay available as explicit choices.
+    const int auto_cap = 3;
+#else
+    const int auto_cap = 8;
+#endif
     auto want_scale = [&]() {
         if (g_set.res_scale) return std::min(g_set.res_scale, max_scale);
-        int fw, fh;
-        SDL_GetWindowSizeInPixels(win, &fw, &fh);
-        return std::max(1, std::min(max_scale, (fh + 239) / 240));
+        return std::max(1, std::min({max_scale, auto_cap, (settled_h + 239) / 240}));
     };
     g_set.textures = ini_get("textures", "1") == "0" ? 0 : 1;
     g_set.aa = std::max(0, std::min(3, atoi(ini_get("aa", "2").c_str())));
@@ -675,12 +735,27 @@ int main(int argc, char **argv) {
         g_input_buttons = poll_buttons(!ImGui::GetIO().WantCaptureKeyboard);
 
         {
+            int fw, fh;
+            SDL_GetWindowSizeInPixels(win, &fw, &fh);
+            uint64_t tnow = SDL_GetTicks();
+            if (fw != pend_w || fh != pend_h) { pend_w = fw; pend_h = fh; pend_t = tnow; }
+            if ((pend_w != settled_w || pend_h != settled_h) && tnow - pend_t >= 500) { settled_w = pend_w; settled_h = pend_h; }
+        }
+        {
             float asp = k_aspects[g_set.aspect];
-            if (asp == 0.0f) { int fw, fh; SDL_GetWindowSizeInPixels(win, &fw, &fh); asp = fh > 0 ? (float)fw / fh : 4.0f / 3.0f; }
+            if (asp == 0.0f) asp = settled_h > 0 ? (float)settled_w / settled_h : 4.0f / 3.0f;
             if (asp < 4.0f / 3.0f + 0.01f || g_set.renderer != 1) asp = 0.0f;
             // The front-end menus (title, candy bars, options, stage select: overlay COMOD0.MEN) are 2D art the game
             // rotates through the GTE around the screen center; widening would stretch them. Pillarbox them.
             if (const char *ov = rt_current_overlay_name()) if (!strcmp(ov, "COMOD0.MEN") && !g_set.stretch_ui) asp = 0.0f;
+            {   static float last_asp = -1.0f;
+                if (std::fabs(asp - last_asp) > 1e-4f) {
+                    const char *ov = rt_current_overlay_name();
+                    fprintf(stderr, "aspect: %.3f -> %.3f (window %dx%d, overlay %s, vblank %d)\n", last_asp, asp, settled_w, settled_h,
+                            ov ? ov : "-", g_vblanks.load());
+                    last_asp = asp;
+                }
+            }
             if (hw_ok) hw_set_widescreen(asp, g_set.stretch_ui);
             g_gte_xscale = asp > 0.0f ? (int32_t)std::lround(4096.0 * (4.0 / 3.0) / asp) : 4096;
         }
@@ -721,6 +796,9 @@ int main(int argc, char **argv) {
             int vb = g_vblanks.load();
             emu_fps = (float)(vb - fps_vb0) * 1000.0f / (float)(now - fps_t0);
             ui_fps = (float)ui_frames * 1000.0f / (float)(now - fps_t0);
+            static int fps_log = getenv("UJL_FPS_STATS") != nullptr;
+            if (fps_log) fprintf(stderr, "fps: game %.1f  ui %.1f  scale %d  overlay %s\n", emu_fps, ui_fps, hw_scale(),
+                                 rt_current_overlay_name() ? rt_current_overlay_name() : "-");
             ui_frames = 0;
             fps_vb0 = vb;
             fps_t0 = now;
@@ -735,7 +813,18 @@ int main(int argc, char **argv) {
         ImVec2 ds = ImGui::GetIO().DisplaySize;
         bool use_hw = g_set.renderer == 1 && hw_have_frame && !hw_disp.depth24;
         HwView view{};
-        if (use_hw) hw_view(hw_disp, &view);
+        if (use_hw) {
+            bool wide_view = hw_view(hw_disp, &view);
+            static int last_wide = -1, flips;
+            static const bool fps_log = getenv("UJL_FPS_STATS") != nullptr;
+            if (fps_log && (int)wide_view != last_wide) {
+                if (flips++ < 400)
+                    fprintf(stderr, "view: %s (disp %d,%d %dx%d, vblank %d, t %llu)\n", wide_view ? "wide" : "4:3",
+                            hw_disp.disp_x, hw_disp.disp_y, hw_disp.hres, hw_disp.vres, g_vblanks.load(),
+                            (unsigned long long)SDL_GetTicks());
+                last_wide = wide_view;
+            }
+        }
         float aspect = use_hw ? view.aspect : 4.0f / 3.0f;
         float w = ds.x, h = ds.x / aspect;
         if (h > ds.y) { h = ds.y; w = h * aspect; }
@@ -762,6 +851,11 @@ int main(int argc, char **argv) {
                 const char *items[] = {"Auto (match window)", "1x (320x240)", "2x (640x480)", "3x (960x720)", "4x (1280x960)",
                                        "5x (1600x1200)", "6x (1920x1440)", "7x (2240x1680)", "8x (2560x1920)"};
                 int cnt = 1 + max_scale;
+                char auto_label[48];
+                if (auto_cap < max_scale) {   // say where Auto stops, so a higher scale is a deliberate choice
+                    SDL_snprintf(auto_label, sizeof auto_label, "Auto (match window, up to %dx)", auto_cap);
+                    items[0] = auto_label;
+                }
                 if (ImGui::Combo("Internal resolution", &g_set.res_scale, items, cnt))
                     ini_set("res_scale", std::to_string(g_set.res_scale));
                 if (ImGui::Combo("Textures", &g_set.textures, "Original (sharp pixels)\0Smooth (vector-like HQ)\0")) {

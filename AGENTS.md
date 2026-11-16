@@ -96,7 +96,7 @@ There's no unit test suite. Verification means running the game headless or scri
   Shots go to `build/cmake/shots/hw_vNNNNN.bmp`. Related variables: `UJL_SCRIPT_ASPECT` (0 4:3 … 3 21:9, 5 auto),
   `UJL_SCRIPT_UNLOCK=1`, `UJL_SCRIPT_CARD`, `UJL_SCRIPT_HIDDEN=WxH`. Confirm-with-Cross is on by default, so menus take
   `cross`.
-- Runtime stats/A-B switches (all env vars): `UJL_CD_STATS`, `UJL_FLIP_STATS`, `UJL_GTE_STATS`, `UJL_SUBPIX_STATS`,
+- Runtime stats/A-B switches (all env vars): `UJL_CD_STATS`, `UJL_FLIP_STATS`, `UJL_FPS_STATS`, `UJL_AUDIO_STATS`, `UJL_GTE_STATS`, `UJL_SUBPIX_STATS`,
   `UJL_WAIT_STATS`, `UJL_FAST_LOAD`, `UJL_SOFT_RASTER`, `UJL_FORCE_RATING`, `UJL_FORCE_SCENE` (8,3 = staff roll from Stage 1), `UJL_NCLIP_INT` (integer-only backface test), and
   `UJL_JP_*` to disable each English patch. `UJL_FORCE_CENSORED=1` serves the USA (censored) Stages 1, 5 and 6
   (`censor.c`; the setting "Uncensored content" is on by default because the JP release is uncensored). `UJL_AUTOPLAY=1/2/3`
