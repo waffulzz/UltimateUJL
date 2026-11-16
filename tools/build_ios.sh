@@ -6,8 +6,8 @@
 #                                              possible, so a 700 MB image takes no extra space)
 #   bash tools/build_ios.sh --ipa              device: an unsigned build/ios-device/UltimateUJL.ipa for
 #                                              sideloading tools that sign it with your own Apple ID
-#                                              (AltStore, Sideloadly, ...). Never share it: it is built from your
-#                                              disc's program (the IPA is gitignored).
+#                                              (AltStore, Sideloadly, ...). No disc assets are packaged;
+#                                              import your own disc after installing. Local IPAs are gitignored.
 #
 # Needs build/gen_jp (tools/prepare.sh), Xcode (with an iOS Simulator runtime for the simulator), cmake and ninja.
 # For a signed device build see docs/ARCHITECTURE.md, "iOS".

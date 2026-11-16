@@ -1,0 +1,131 @@
+# Playable downloads use generated JP C; users still supply their own disc assets.
+# The independent CI workflow also tests synthetic code without requiring a disc.
+name: Playable builds
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: playable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-2025
+            shell: 'msys2 {0}'
+            python: python
+          - platform: linux-x64
+            os: ubuntu-24.04
+            shell: bash
+            python: python3
+          - platform: macos-arm64
+            os: macos-15
+            shell: bash
+            python: python3
+          - platform: macos-x64
+            os: macos-15-intel
+            shell: bash
+            python: python3
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Windows toolchain
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-clang mingw-w64-clang-x86_64-cmake
+            mingw-w64-clang-x86_64-ninja mingw-w64-clang-x86_64-python
+      - name: Install macOS packages
+        if: runner.os == 'macOS'
+        run: brew install ninja
+      - name: Install Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang ninja-build cmake python3 \
+            libgl-dev libegl-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+            libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev \
+            libdrm-dev libgbm-dev libasound2-dev libpulse-dev libudev-dev libdbus-1-dev
+      - name: Verify and unpack generated JP code
+        run: ${{ matrix.python }} -I tools/ci_recomp_bundle.py unpack
+      - name: Configure
+        run: |
+          repo_path="$PWD"
+          if [ "$RUNNER_OS" = Windows ]; then repo_path="$(cygpath -m "$PWD")"; fi
+          cmake -S . -B build/playable -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DRECOMP_DIR="$repo_path/build/gen_ci"
+      - name: Build game and score checks
+        run: cmake --build build/playable --target ujl ujl_score_test
+      - name: Check score recorder
+        run: |
+          suffix=""
+          if [ "$RUNNER_OS" = Windows ]; then suffix=.exe; fi
+          build/playable/ujl_score_test$suffix build
+      - name: Package game
+        run: >-
+          ${{ matrix.python }} -I tools/package_build.py ${{ matrix.platform }}
+          --build build/playable --revision "${{ github.sha }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UltimateUJL-${{ matrix.platform }}
+          path: build/artifacts/*
+          if-no-files-found: error
+          retention-days: 90
+
+  ios:
+    name: iOS arm64 IPA (unsigned)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install packages
+        run: brew install ninja
+      - name: Verify and unpack generated JP code
+        run: python3 -I tools/ci_recomp_bundle.py unpack
+      - name: Configure device build
+        run: >-
+          cmake -S . -B build/ios-playable -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DUJL_IOS_SIGN_IDENTITY=
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DRECOMP_DIR="$PWD/build/gen_ci"
+      - name: Build game
+        run: cmake --build build/ios-playable --target ujl
+      - name: Check device bundle
+        run: |
+          plutil -lint build/ios-playable/UltimateUJL.app/Info.plist
+          test "$(lipo -archs build/ios-playable/UltimateUJL.app/UltimateUJL)" = arm64
+      - name: Package unsigned IPA
+        run: >-
+          python3 -I tools/package_build.py ios-arm64 --build build/ios-playable
+          --revision "${{ github.sha }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UltimateUJL-ios-arm64-unsigned
+          path: build/artifacts/*.ipa
+          if-no-files-found: error
+          retention-days: 90
+      - name: Sideloading instructions
+        run: |
+          echo '### iOS download' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The IPA is for physical arm64 devices. Sign it with your sideloading tool before installing; no Apple signing account is stored in CI. Import your own JP disc image after installation.' >> "$GITHUB_STEP_SUMMARY"

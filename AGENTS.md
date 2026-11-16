@@ -49,8 +49,9 @@ iOS/iPadOS (on a Mac with Xcode and an iOS Simulator runtime; notes in docs/ARCH
 `build/gen_jp`, cross-compiled into `UltimateUJL.app` (only the `ujl` target exists there). `bash tools/build_ios.sh
 "Um Jammer Lammy (JP).bin"` configures `build/ios-sim`, builds, installs on the booted simulator and clones the disc
 image into the app's Documents. `bash tools/build_ios.sh --ipa` writes an unsigned `build/ios-device/UltimateUJL.ipa`
-for sideloading tools that sign it themselves (IPAs are gitignored: they hold code built from the user's disc, so never
-share one). By hand:
+for sideloading tools that sign it themselves. CI also packages unsigned device IPAs and desktop downloads from the
+generated C bundle (see `ci/README.md`); these contain no disc assets and still require the user's own disc data.
+Local IPAs remain gitignored. By hand:
 
 ```bash
 cmake -S . -B build/ios-sim -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \

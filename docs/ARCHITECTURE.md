@@ -34,7 +34,9 @@ loop, menus, story mode, every stage in solo, versus and co-op, PaRappa mode, th
 Sound: SPU voices, reverb and XA through SDL (no SPU noise yet). Two renderers: the software rasterizer (original
 320x240) and the OpenGL hardware renderer (up to 8x internal resolution, MSAA, smooth textures, sub-pixel
 vertices, widescreen up to 32:9 with the menus pillarboxed; movies stay native 4:3). Builds on Windows, macOS
-and Linux; CI runs a disc-free smoke test on all three.
+and Linux; CI runs a disc-free smoke test on all three. The Playable builds workflow packages Windows/Linux x64,
+macOS arm64/x64 and an unsigned physical-device iOS arm64 IPA from the generated JP C bundle (`ci/README.md`).
+No ROM assets or build secrets are required; players still import their own disc data.
 With the USA disc imported (first-run setup wizard, Settings > Discs): English title logo, menus, tooltips,
 memory card messages and credits song, plus the option to switch Stages 1, 5 and 6 to the censored USA versions
 ("Uncensored content", on by default). Also: instant loading, unlock-all, confirm with Cross, Autoplay and
@@ -471,7 +473,9 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   signature and zips `Payload/UltimateUJL.app` into an unsigned IPA for sideloading tools (AltStore, Sideloadly)
   that sign it with the user's Apple ID. The Info.plist template carries MinimumOSVersion, UIDeviceFamily and
   CFBundleSupportedPlatforms, which Xcode adds itself and a device checks on install. CI builds
-  both SDKs against the smoke test code (job `ios`, compile and link only).
+  both SDKs against the smoke test code (job `ios`, compile and link only). The separate Playable builds workflow
+  builds the generated JP program for `iphoneos` and uploads an unsigned IPA for sideloading; no Mac is needed
+  to produce that artifact. CI checks the bundle plist and arm64 architecture before packaging it.
 - **Renderer: OpenGL ES 3.0, not Metal.** UIKit still has OpenGL ES 3.0 (deprecated since iOS 12, still in the
   iOS 27 SDK and the simulator), and SDL creates the EAGL context. `hw_renderer.cpp` needed only its shaders
   changed: `glsl()` rewrites `#version 330 core` to `#version 300 es` with highp default precisions, and drops

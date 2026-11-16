@@ -181,9 +181,11 @@ jobs:
             build/smoke/run/build/shots/
 
   python-tools:
-    name: Python tools (syntax)
+    name: Python tools (syntax, CI packaging)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Byte-compile every script
         run: python3 -m compileall -q tools tests
+      - name: Test generated-code bundle and artifact contents
+        run: python3 -I tests/ci_tools_test.py
