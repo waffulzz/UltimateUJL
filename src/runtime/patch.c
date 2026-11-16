@@ -288,6 +288,62 @@ static int find_tim_rect(const uint8_t *d, uint32_t len, int x, int y, int w, in
     return 0;
 }
 
+/* The US startup card spans two TIMs (256 + 64 pixels). The generic same-size swap supplies only the
+   first one. Keep its continuation at the US VRAM coordinates, unused by the JP menu archive. */
+static int startup_logo_ready;
+static uint16_t startup_logo_tail[16 * 32], startup_logo_clut[16];
+static void english_startup_logo(void) {
+    startup_logo_ready = 0;
+    if (!g_patch_english_menus || !aux_disc_ready()) return;
+    uint8_t *us;
+    uint32_t len;
+    if (!aux_disc_read_file("S0/CMP0.INT", &us, &len)) return;
+    PatchedFile *jp = load_for_patch("S0/CMP0.INT");
+    IntEntry first, tail;
+    uint32_t at, co, io, total;
+    if (jp && int_find(us, len, "SCEAP41.TIM", &first) && int_find(us, len, "SCEAP42.TIM", &tail) &&
+        find_tim_rect(jp->data, jp->nsec * 2048, 832, 256, 64, 32, &at, 0) &&
+        first.size <= jp->nsec * 2048 - at && !memcmp(jp->data + at, us + first.off, first.size) &&
+        tail.size == 1088 && tim_layout(us + tail.off, tail.size, &co, &io, &total) && co &&
+        total == tail.size) {
+        uint16_t rect[4], clut[4];
+        memcpy(rect, us + tail.off + io + 4, sizeof rect);
+        memcpy(clut, us + tail.off + co + 4, sizeof clut);
+        if (rect[0] == 864 && rect[1] == 288 && rect[2] == 16 && rect[3] == 32 &&
+            clut[0] == 848 && clut[1] == 288 && clut[2] == 16 && clut[3] == 1) {
+            memcpy(startup_logo_tail, us + tail.off + io + 12, sizeof startup_logo_tail);
+            memcpy(startup_logo_clut, us + tail.off + co + 12, sizeof startup_logo_clut);
+            startup_logo_ready = 1;
+        }
+    }
+    free(us);
+}
+
+void startup_logo_note_upload(int x, int y, int w, int h) {
+    if (!startup_logo_ready || x != 832 || y != 256 || w != 64 || h != 32) return;
+    for (int r = 0; r < 32; r++) memcpy(&g_vram[(288 + r) * 1024 + 864], startup_logo_tail + r * 16, 32);
+    memcpy(&g_vram[288 * 1024 + 848], startup_logo_clut, sizeof startup_logo_clut);
+    if (g_gpu_backend.vram_write) {
+        g_gpu_backend.vram_write(864, 288, 16, 32);
+        g_gpu_backend.vram_write(848, 288, 16, 1);
+    }
+}
+
+int startup_logo_filter(const GpuPrim *p, void (*emit)(const GpuPrim *)) {
+    if (!startup_logo_ready || p->type != PRIM_RECT || !p->textured ||
+        (p->texpage & 0x19F) != 0x1D || p->clut != ((288 << 6) | (832 / 16)) ||
+        p->v[0].x - p->clip_x0 != 32 ||
+        p->v[0].u || p->v[0].v || p->w != 256 || p->h != 32) return 0;
+    GpuPrim q = *p;
+    q.v[0].x -= 32; /* center the complete 320-pixel card */
+    emit(&q);
+    q.v[0].x += 256;
+    q.v[0].u = 128; q.v[0].v = 32;
+    q.w = 64; q.clut = (288 << 6) | (848 / 16);
+    emit(&q);
+    return 1;
+}
+
 static void english_tooltips(void) {
     if (!aux_disc_ready() || getenv("UJL_JP_TOOLTIPS")) return;
     uint8_t *usov = NULL, *usint = NULL;
@@ -650,6 +706,7 @@ void patch_init(void) {
         blank_tims_at_vram("S0\\CMP0.INT", 512, 86, 34, 43);
     }
     if (g_patch_english_menus) swap_tims_from_aux("S0\\CMP0.INT");
+    english_startup_logo();
     tooltip_ready = 0;
     if (g_patch_english_tooltips) english_tooltips();
     if (g_patch_english_mc) english_mc_messages();

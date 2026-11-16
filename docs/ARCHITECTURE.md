@@ -84,6 +84,12 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   - Title logo: the Japanese lettering is LGT1/LGT2 (VRAM 512,43 / 512,86). There are 3 copies of each in
     S0/CMP0.INT, two of them in an *unindexed tail* after the TIM table. All are blanked, which leaves the
     shared emblem that reads "Um Jammer Lammy".
+  - Startup publisher card (2026-11-16): the same-size menu swap replaces the JP 256x32 TIM with only the
+    first US piece (SCEAP41.TIM). The US card is 320x32: SCEAP42.TIM supplies the last 64 pixels. `patch.c`
+    reads that continuation from the USA disc and uploads it at (864,288), palette (848,288), when the first
+    piece is uploaded. Those rectangles do not overlap the JP menu archive's images/palettes. The GPU filter
+    shifts the original sprite left 32 pixels and emits the continuation, keeping both lines centered and
+    preserving the original fade. With no USA disc (or menu swapping off), the JP card is unchanged.
   - Captions: **the JP release has its own LANGUAGE option** (main menu: ENGLISH / Japanese) and ships the
     final English subtitles and lyrics. That's why every JP overlay carries English timelines byte-identical to
     the USA ones. The setting is the word at 0x801a5338 (settings block 0x801a5310 + 0x28): 5 = Japanese,

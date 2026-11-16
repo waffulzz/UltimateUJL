@@ -122,6 +122,7 @@ static uint8_t is_gte3d(const GpuPrim *p) {
 int tooltip_english_active(void);
 static void emit(const GpuPrim *p) {
     if (title_logo_filter(p, emit_raw)) return;
+    { extern int startup_logo_filter(const GpuPrim *, void (*)(const GpuPrim *)); if (startup_logo_filter(p, emit_raw)) return; }
     { extern int mc_text_filter(const GpuPrim *, void (*)(const GpuPrim *)); if (mc_text_filter(p, emit_raw)) return; }
     GpuPrim swapped;
     if (button_swap_filter(p, &swapped)) p = &swapped;
@@ -329,6 +330,7 @@ static void xf_pixel(uint16_t p) {
             xf = XF_NONE;
             { extern void title_logo_note_upload(int, int, int, int); title_logo_note_upload(xf_x, xf_y, xf_w, xf_h); }
             { extern void tooltip_note_upload(int, int, int, int); tooltip_note_upload(xf_x, xf_y, xf_w, xf_h); }
+            { extern void startup_logo_note_upload(int, int, int, int); startup_logo_note_upload(xf_x, xf_y, xf_w, xf_h); }
             if (g_gpu_backend.vram_write) g_gpu_backend.vram_write(xf_x, xf_y, xf_w, xf_h);
         }
     }
