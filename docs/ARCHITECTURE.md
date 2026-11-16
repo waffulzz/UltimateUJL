@@ -125,7 +125,9 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   the shared emblem.
 - **Function discovery**: overlay code reached only through pointers (e.g. COMOD11.SNG 0x801c6de0, the Stage 1
   crash) is accepted when it looks like a function start: it follows `jr ra`/`j`/an unconditional branch (+ nop
-  padding), or it opens with `addiu sp,sp,-N`.
+  padding), or it opens with `addiu sp,sp,-N`. A pointer-table target that no analyzed function covers counts too:
+  COMOD12.COP 0x801c6d94 (a type-3 "wait until" handler in a cutscene event table at 0x801ddc48) follows embedded
+  sequence data, and the Stage 2 sub 5 intro called it only with player 2 on a controller (FATAL call_indirect).
 - **Confirm button**: JP confirms with Circle. `g_confirm_cross` (settings: "Confirm with Cross in menus",
   saved as `confirm_cross` in ujl.ini) swaps Circle/Cross in `rt_pad_state()` while a `*.MEN` overlay is
   loaded, or while the in-stage "AGAIN?" prompt is up. button_swap.c spots that prompt's ○/✕ icon sprites

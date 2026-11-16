@@ -371,7 +371,8 @@ class Analyzer:
                 covered |= f.addrs
             code_end = max(f.end for f in self.funcs.values())
             new = []
-            cands = set(exe.word(a) for a in range(exe.base, exe.end, 4)) | consts
+            words = set(exe.word(a) for a in range(exe.base, exe.end, 4))
+            cands = words | consts
             for v in cands:
                 if not (exe.base <= v < code_end and v & 3 == 0) or v in self.funcs:
                     continue
@@ -379,7 +380,10 @@ class Analyzer:
                 prologue = first.name == "addiu" and first.rs == 29 and first.rt == 29 and first.simm < 0
                 # referenced + (follows a function return, or opens a stack frame) => function start,
                 # even if another function's analysis flowed into it
-                if self.valid_code(v) and (looks_like_start(v) or prologue):
+                # a pointer-table target no analyzed function reaches is a start too (COMOD12.COP's
+                # 801c6d94 follows embedded sequence data, so nothing marks it as code otherwise)
+                orphan = v in words and v not in covered
+                if self.valid_code(v) and (looks_like_start(v) or prologue or orphan):
                     new.append(v)
             if not new:
                 break
