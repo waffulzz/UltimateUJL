@@ -69,6 +69,7 @@ bool g_stretch_ui = false;
 uint32_t frame_no;
 int st_wide_batches, st_replays, st_glerr;
 double st_replay_ms;
+double perf_replay_ms; int perf_replays;   // since the last hw_take_replay_ms (performance details)
 int st_last_drops;
 extern "C" int g_gpu_rec_drops;
 int st_flush, st_sync_read, st_sync_wide, st_alloc_wide, st_upload; // per-second stats
@@ -1333,8 +1334,21 @@ bool hw_replay(const uint8_t *data, size_t len, GpuDisplay *disp) {
     resolve_display();
     gl_check("resolve");
     st_replays++;
-    st_replay_ms += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+    {
+        double ms = (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+        st_replay_ms += ms;
+        perf_replay_ms += ms;
+        perf_replays++;
+    }
     for (GLenum e; (e = glGetError()) != GL_NO_ERROR;) { if (st_glerr++ < 20) fprintf(stderr, "hw: GL error 0x%x\n", e); }
     restore_state(st);
     return frame;
+}
+
+double hw_take_replay_ms(int *replays) {
+    double ms = perf_replay_ms;
+    *replays = perf_replays;
+    perf_replay_ms = 0;
+    perf_replays = 0;
+    return ms;
 }

@@ -414,10 +414,11 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
 - **A UI slower than 250 ms per frame flickered** between the picture and bare backgrounds (seen on the title
   screen in the simulator, would happen on any very slow GPU). `gpu_rec_vblank` drops the backlog when the UI
   falls 6 frames behind and restarts from a full VRAM upload, but with the hardware renderer recording, the
-  software raster is off and `g_vram` has no drawn pixels: every restart showed the backgrounds alone. Now the
-  first drop turns the software raster back on for good (`soft_forced`, logged "gpu_rec: the renderer fell
-  behind") and the restart waits 3 vblanks for g_vram to hold a whole drawn frame (`resync_defer`). Desktop GPUs
-  that keep up never take this path.
+  software raster is off and `g_vram` has no drawn pixels: every restart showed the backgrounds alone. Now a drop
+  pauses recording for 5 vblanks (`resync_defer`; `rec_prim` rasterizes in software whenever it isn't recording, so
+  g_vram gets two whole drawn frames even at 30 fps) and restarts after that. The first version kept the software
+  raster on for good after the first drop, which brought back its 20-35 ms game-thread spikes: on an iPhone 16 Pro
+  that was lag "sometimes", after any slow moment such as a load. Desktop GPUs that keep up never take this path.
 - **Files**: the bundle is read-only, so `platform_data_dir()` (`platform.h`, `platform_ios.mm`) is the app's
   Documents folder and replaces the exe folder (`g_base_dir`): ujl.ini, ujl.log, ujl_imgui.ini, ujl_card1.mcd,
   shots. Info.plist sets `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace`, so that folder is "On My
@@ -466,7 +467,18 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
 - **Verified in the iOS 27.2 Simulator (iPhone 18 Pro), 2026-11-16**: first-run wizard driven by touch (it found
   the JP image in Documents), boot from the JP disc, intro, title, attract demo, and the front-end menus at 60
   vblank/s; the touch pad's START, d-pad and Circle drive the title and candy-bar menus; the menu button opens the
-  settings, where Touch controls switches the pad; zero GL errors. Not verified: a physical device (signing,
+  settings, where Touch controls switches the pad; zero GL errors.
+- **First test on a phone (iPhone 16 Pro, sideloaded unsigned IPA, 2026-11-16)**: the FPS line and the Autoplay
+  watermark went off screen, the picture stayed squeezed 4:3 between the buttons, and it lagged now and then.
+  Changes: overlays are placed in the intersection of the picture, the safe area and the space between the
+  button columns (`ui0`/`ui1` in main.cpp); setting "Touch layout" (ujl.ini `touch_layout`), default 0 = the
+  picture fills the screen as without the pad (Auto aspect follows the window) and the translucent buttons sit
+  over it, 1 = the earlier layout between the columns; the gpu_rec fix above; MSAA off by default on iOS; and the
+  frame loop paced to 60 Hz on iOS (SDL has no swap interval for UIKit OpenGL and presenting doesn't wait for
+  the display, so the loop could draw frames nobody sees). Setting "Performance details" (next to Show FPS, ujl.ini
+  `perf_details`) adds the longest frame, the average replay time and recorder drops to the FPS line and writes
+  them to ujl.log once a second, which the Files app can share. Still unmeasured on the phone itself: ask for
+  that log if it lags again. Not verified: a physical device (signing,
   speed), the document picker (needs Files content in the simulator), the pad reappearing when a controller
   disconnects (the Mac's controller was passed through the whole time; the Auto check runs every frame from
   SDL's gamepad list), backgrounding.

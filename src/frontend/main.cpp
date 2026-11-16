@@ -45,6 +45,7 @@ int autoplay_active(void);                // autoplay.c: playing the current son
 extern "C" SDL_Thread *rt_create_thread(SDL_ThreadFunction fn, const char *name, void *data); // bios.c: big-stack thread
 extern "C" int g_cd_fast_load;            // cdrom.c: fast data loading + loading turbo (setting "fast_load")
 extern "C" int rt_load_turbo_active(void); // cpu.c: the emulation is fast-forwarding through a load
+extern "C" int g_gpu_rec_drops;           // gpu_rec.c: times the renderer fell behind and the recorder resynced
 const char *rt_current_overlay_name(void);
 #include "gpu_rec.h"
 }
@@ -119,7 +120,9 @@ struct Settings {
     bool thin_fix = true;  // widen sub-pixel-thin 3D triangles to a native pixel
     int  aspect = 0;       // 0 4:3, 1 16:9, 2 16:10, 3 21:9, 4 32:9, 5 auto (window)
     bool stretch_ui = false;
+    bool perf = false;     // FPS line + ujl.log: frame times, renderer replay time, recorder drops (once a second)
     int  touch = TOUCH_NEVER; // on-screen controller: TOUCH_AUTO (no controller connected), TOUCH_ALWAYS, TOUCH_NEVER
+    int  touch_layout = 0;    // 0: the picture fills the screen, buttons over it; 1: the picture fits between the buttons
 };
 static const float k_aspects[] = {4.0f / 3.0f, 16.0f / 9.0f, 16.0f / 10.0f, 21.0f / 9.0f, 32.0f / 9.0f, 0.0f};
 static Settings g_set;
@@ -770,6 +773,10 @@ int main(int argc, char **argv) {
 #if UJL_IOS && TARGET_OS_SIMULATOR
     // The Simulator rasterizes on the CPU: smoothed textures and MSAA took the menus to ~1 fps. Settings still apply.
     const char *def_textures = "0", *def_aa = "0";
+#elif UJL_IOS
+    // Phones: MSAA off by default. Every render-target switch on a tile GPU stores and reloads the whole target, and
+    // with 4x MSAA that is four times the data (render-to-texture switches targets many times a frame).
+    const char *def_textures = "1", *def_aa = "0";
 #else
     const char *def_textures = "1", *def_aa = "2";
 #endif
@@ -783,6 +790,8 @@ int main(int argc, char **argv) {
     g_set.aspect = std::max(0, std::min(5, atoi(ini_get("aspect", "5").c_str())));
     g_set.stretch_ui = ini_get("stretch_ui", "0") == "1";
     g_set.touch = std::max(0, std::min(2, atoi(ini_get("touch_controls", UJL_IOS ? "0" : "2").c_str())));
+    g_set.touch_layout = ini_get("touch_layout", "0") == "1" ? 1 : 0;
+    g_set.perf = ini_get("perf_details", "0") == "1";
     g_unlock_all = ini_get("unlock_all", "0") == "1";
     g_cd_fast_load = ini_get("fast_load", "0") == "1";
     if (!g_script.empty()) {
@@ -809,6 +818,8 @@ int main(int argc, char **argv) {
     uint64_t fps_t0 = SDL_GetTicks();
     int fps_vb0 = 0;
     float emu_fps = 0, ui_fps = 0;
+    float perf_worst_ms = 0, perf_shown_worst = 0, perf_replay_ms = 0;   // performance details (setting)
+    int perf_drops = 0, perf_drops0 = 0;
     int ui_frames = 0;
 
     bool running = true;
@@ -851,11 +862,12 @@ int main(int argc, char **argv) {
             if (fw != pend_w || fh != pend_h) { pend_w = fw; pend_h = fh; pend_t = tnow; }
             if ((pend_w != settled_w || pend_h != settled_h) && tnow - pend_t >= 500) { settled_w = pend_w; settled_h = pend_h; }
         }
+        SDL_Rect sa{0, 0, 0, 0};   // the window's safe area (camera cutout, rounded corners, home indicator)
         {   // on-screen controller: shown per the setting, never over the settings or the disc wizard
             int ww = 0, wh = 0;
             SDL_GetWindowSize(win, &ww, &wh);
-            SDL_Rect sa{0, 0, ww, wh};
-            SDL_GetWindowSafeArea(win, &sa);
+            sa = SDL_Rect{0, 0, ww, wh};
+            if (!SDL_GetWindowSafeArea(win, &sa) || sa.w <= 0 || sa.h <= 0) sa = SDL_Rect{0, 0, ww, wh};
             bool pad_on = (g_set.touch == TOUCH_ALWAYS || (g_set.touch == TOUCH_AUTO && g_pads.empty())) &&
                           !g_set.show_overlay && !wizard_active();
             touchpad_update((float)ww, (float)wh, TouchRect{(float)sa.x, (float)sa.y, (float)(sa.x + sa.w), (float)(sa.y + sa.h)},
@@ -863,9 +875,9 @@ int main(int argc, char **argv) {
         }
         {
             float asp = k_aspects[g_set.aspect];
-            if (asp == 0.0f) {   // auto: the window, or the space between the touch buttons while they show
+            if (asp == 0.0f) {   // auto: the window, or the space between the touch buttons in that layout
                 TouchRect fr = touchpad_free_rect();
-                if (touchpad_visible() && fr.y1 > fr.y0) asp = (fr.x1 - fr.x0) / (fr.y1 - fr.y0);
+                if (touchpad_visible() && g_set.touch_layout == 1 && fr.y1 > fr.y0) asp = (fr.x1 - fr.x0) / (fr.y1 - fr.y0);
                 else asp = settled_h > 0 ? (float)settled_w / settled_h : 4.0f / 3.0f;
             }
             if (asp < 4.0f / 3.0f + 0.01f || g_set.renderer != 1) asp = 0.0f;
@@ -918,13 +930,28 @@ int main(int argc, char **argv) {
         }
         uint64_t now = SDL_GetTicks();
         ui_frames++;
+        {   // longest gap between two UI frames (a hitch), for the performance details
+            static uint64_t last_ns;
+            uint64_t t = SDL_GetTicksNS();
+            if (last_ns) perf_worst_ms = std::max(perf_worst_ms, (float)((t - last_ns) / 1e6));
+            last_ns = t;
+        }
         if (now - fps_t0 >= 1000) {
             int vb = g_vblanks.load();
             emu_fps = (float)(vb - fps_vb0) * 1000.0f / (float)(now - fps_t0);
             ui_fps = (float)ui_frames * 1000.0f / (float)(now - fps_t0);
+            int replays = 0;
+            double rms = hw_take_replay_ms(&replays);
+            perf_replay_ms = replays ? (float)(rms / replays) : 0.0f;
+            perf_shown_worst = perf_worst_ms;
+            perf_worst_ms = 0;
+            perf_drops = g_gpu_rec_drops - perf_drops0;
+            perf_drops0 = g_gpu_rec_drops;
             static int fps_log = getenv("UJL_FPS_STATS") != nullptr;
-            if (fps_log) fprintf(stderr, "fps: game %.1f  ui %.1f  scale %d  overlay %s\n", emu_fps, ui_fps, hw_scale(),
-                                 rt_current_overlay_name() ? rt_current_overlay_name() : "-");
+            if (fps_log || g_set.perf)
+                fprintf(stderr, "fps: game %.1f  ui %.1f  worst frame %.1f ms  replay %.2f ms avg  drops %d  scale %d  msaa %d  overlay %s\n",
+                        emu_fps, ui_fps, perf_shown_worst, perf_replay_ms, perf_drops, hw_scale(), hw_msaa(),
+                        rt_current_overlay_name() ? rt_current_overlay_name() : "-");
             ui_frames = 0;
             fps_vb0 = vb;
             fps_t0 = now;
@@ -956,7 +983,17 @@ int main(int argc, char **argv) {
         float w = ds.x, h = ds.x / aspect;
         if (h > ds.y) { h = ds.y; w = h * aspect; }
         ImVec2 p0((ds.x - w) * 0.5f, (ds.y - h) * 0.5f);
-        if (touchpad_visible()) touchpad_fit(aspect, &p0.x, &p0.y, &w, &h);   // between the touch buttons
+        if (touchpad_visible() && g_set.touch_layout == 1) touchpad_fit(aspect, &p0.x, &p0.y, &w, &h);   // between the buttons
+        // Where overlays (FPS, Autoplay watermark) go: the picture, inside the safe area, clear of the touch buttons
+        ImVec2 ui0(p0.x, p0.y), ui1(p0.x + w, p0.y + h);
+        {
+            TouchRect fr = touchpad_free_rect();
+            ui0.x = std::max({ui0.x, (float)sa.x, fr.x0});
+            ui0.y = std::max({ui0.y, (float)sa.y, fr.y0});
+            ui1.x = std::min({ui1.x, (float)(sa.x + sa.w), fr.x1});
+            ui1.y = std::min({ui1.y, (float)(sa.y + sa.h), fr.y1});
+            if (ui1.x <= ui0.x || ui1.y <= ui0.y) { ui0 = ImVec2(0, 0); ui1 = ds; }
+        }
         if (use_hw && hw_disp.enabled) {
             ImGui::GetBackgroundDrawList()->AddImage((ImTextureID)(intptr_t)view.tex, p0, ImVec2(p0.x + w, p0.y + h),
                                                      ImVec2(view.u0, view.v0), ImVec2(view.u1, view.v1));
@@ -1051,6 +1088,16 @@ int main(int argc, char **argv) {
                 ImGui::Combo("Scaling filter", &g_set.scale_filter, "Nearest (sharp)\0Linear (smooth)\0");
             }
             ImGui::Checkbox("Show FPS", &g_set.show_fps);
+            if (g_set.show_fps) {
+                ImGui::SameLine();
+                if (ImGui::Checkbox("Performance details", &g_set.perf)) ini_set("perf_details", g_set.perf ? "1" : "0");
+                if (ImGui::BeginItemTooltip()) {
+                    ImGui::TextUnformatted("Adds to the FPS line: the longest frame in the last second, the renderer's\n"
+                                           "time per replayed frame, and frames the renderer fell behind on. The same\n"
+                                           "numbers go to ujl.log once a second (on iOS: Files app > Ultimate UJL).");
+                    ImGui::EndTooltip();
+                }
+            }
             ImGui::SeparatorText("Audio");
             { int vol = g_volume.load(); if (ImGui::SliderInt("Volume", &vol, 0, 100)) g_volume = vol; }
             ImGui::SeparatorText("Game");
@@ -1177,6 +1224,10 @@ int main(int argc, char **argv) {
             }
             if (ImGui::Combo("Touch controls", &g_set.touch, "Auto (hidden while a controller is connected)\0Always\0Never\0"))
                 ini_set("touch_controls", std::to_string(g_set.touch));
+            if (g_set.touch != TOUCH_NEVER &&
+                ImGui::Combo("Touch layout", &g_set.touch_layout, "Over the picture (full screen)\0Beside the picture\0")) {
+                ini_set("touch_layout", std::to_string(g_set.touch_layout));
+            }
             if (ImGui::BeginItemTooltip()) {
                 ImGui::TextUnformatted("An on-screen PlayStation pad at the sides of the screen. The game picture moves\n"
                                        "between its buttons while it shows.");
@@ -1210,16 +1261,21 @@ int main(int argc, char **argv) {
             const char *wm = g_autoplay == 3 ? "AUTO-FEVER" : g_autoplay == 2 ? "AUTO-COOL" : "AUTOPLAY";
             float fs = std::max(16.0f, h / 22.0f);
             ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, wm);
-            ImVec2 at(p0.x + w - sz.x - fs * 0.6f, p0.y + h - sz.y - fs * 0.5f);
+            ImVec2 at(ui1.x - sz.x - fs * 0.6f, ui1.y - sz.y - fs * 0.5f);
             ImDrawList *dl = ImGui::GetForegroundDrawList();
             dl->AddRectFilled(ImVec2(at.x - fs * 0.3f, at.y - fs * 0.15f), ImVec2(at.x + sz.x + fs * 0.3f, at.y + sz.y + fs * 0.15f),
                               IM_COL32(0, 0, 0, 110), fs * 0.25f);
             dl->AddText(ImGui::GetFont(), fs, at, IM_COL32(255, 255, 255, 190), wm);
         }
         touchpad_draw(ImGui::GetForegroundDrawList());
-        if (g_set.show_fps)
-            // iOS: on the picture's corner (the window corner is under the menu button and the camera cutout)
-            ImGui::GetForegroundDrawList()->AddText(UJL_IOS ? ImVec2(p0.x + 8, std::max(p0.y, 0.0f) + 8) : ImVec2(8, 8), 0xFF00FF00, (std::to_string((int)(ui_fps + 0.5f)) + " fps  (" + std::to_string((int)(emu_fps + 0.5f)) + " vblank/s)").c_str());
+        // desktop: the window corner; iOS: the picture's safe corner (not under the cutout or the menu button)
+        if (g_set.show_fps) {
+            char line[160];
+            int n = SDL_snprintf(line, sizeof line, "%d fps  (%d vblank/s)", (int)(ui_fps + 0.5f), (int)(emu_fps + 0.5f));
+            if (g_set.perf)
+                SDL_snprintf(line + n, sizeof line - n, "  worst %.0f ms  replay %.1f ms  drops %d", perf_shown_worst, perf_replay_ms, perf_drops);
+            ImGui::GetForegroundDrawList()->AddText(UJL_IOS ? ImVec2(ui0.x + 8, ui0.y + 8) : ImVec2(8, 8), 0xFF00FF00, line);
+        }
 
         ImGui::Render();
         int fbw, fbh;
@@ -1264,6 +1320,17 @@ int main(int argc, char **argv) {
             if (dt > 250)
                 fprintf(stderr, "present: swap stalled %llu ms (focused=%d)\n", (unsigned long long)dt,
                         (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0);
+#if UJL_IOS
+            {   // SDL doesn't pace OpenGL on iOS (no swap interval there; presenting doesn't wait for the display), so
+                // the loop could draw far more frames than the screen shows: wasted GPU time and heat, then throttling.
+                // Hold it to 60 frames a second, which is also all an iPhone shows without a ProMotion opt-in.
+                static uint64_t last_present;
+                const uint64_t period = 16666667;
+                uint64_t t = SDL_GetTicksNS();
+                if (last_present && t - last_present < period - 1000000) SDL_DelayPrecise(period - (t - last_present));
+                last_present = SDL_GetTicksNS();
+            }
+#endif
         }
     }
     memcard_flush(); // don't lose a save made in the last second
