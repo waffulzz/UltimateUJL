@@ -259,6 +259,47 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     (.mcs/.psx/.mcb, bare SC data). Mode "copy this game's saves" also takes US BASCUS-94448* saves and renames
     them BISCPS-18011*: the first 0x600 bytes share the layout (verified with a real US card: progress and
     unlocks carried over). Imports run on the game thread at vblank.
+- **Host replay files (2026-11-16, src/runtime/replay_files.c)**: desktop builds default to
+  `UJL_REPLAY_FILES=ON`; setting/ini `replay_files` selects native file dialogs instead of card replay slots.
+  iOS defaults OFF and retains the guest path (enabling it requires a save picker). System saves stay on the card.
+  - `replay_directory_entries` (8001fe94) builds the menu's replay list from the boot-cached card directory.
+    Its three callers are replay-only: the save prompt's capacity check and `replay_slot_picker`
+    (801c7adc@COMOD0.MEN). Conditional `filter_` hooks return nonzero to handle these calls, or zero to execute
+    the unchanged guest body. Host mode supplies one virtual slot, so a full card cannot block replays.
+    No virtual directory entries or card blocks are persisted.
+  - `replay_card_load` (8001ff78) normally reads 0x1e00 bytes at file offset 0x200 into temporary RAM
+    (usually 80088cd0), validates `save_checksum` (8001f8e8), then copies 0x1dd4 bytes to 801a3538.
+    The raw file is one 8192-byte SC block. Payload +0/+4 are stage (1..7) and mode (0..5); +0x1dd0 is the
+    little-endian byte sum of 0x1dd4 bytes with that word zeroed. Host loads validate size, SC header, stage/mode
+    and checksum before changing guest RAM. A .mcs/.psx/.mcb directory frame (128 bytes, JP or US replay name)
+    followed by the block is also accepted. Bare blocks have no filename metadata; playback uses the payload.
+  - Host loading replaces the slot picker, fills its first 40-byte entry (stage/mode at +32/+36), and returns
+    slot 0. The original caller then configures the replay and starts it (screens 5 -> 36). Cancellation returns
+    -1 through the original exit/fade path. Returning from a file replay normally enters screen 5 again; the
+    menu hook redirects that one return to screen 3 (all candy bars), then clears the flag so an explicit
+    subsequent Replay selection opens the picker again.
+  - After YES at the original save prompt (screen 28), host mode replaces the chocolate slots (31/29) with
+    the save dialog, using the current stage/mode/score/rating and the name already entered after the song.
+    It skips the second card-name entry screen and uses the original cancel/continuation route after saving.
+    A `replay_card_save` (8002011c) filter also handles any in-flight card-name screen when the setting changes.
+    `replay_build_save`
+    (80020060), using `temp_buffer_alloc`/`temp_buffer_release` (8001473c/800147d0), produces the original SC
+    header/icon/title and checksummed recording. Every byte of that content comes from the user's disc/RAM.
+    The host writes an adjacent temporary file and renames it over the destination after a complete write.
+  - The game thread publishes a request using SDL atomics and services interrupts with `rt_idle` while waiting;
+    the UI thread launches SDL's asynchronous dialog. Callbacks publish only a path. The UI handles file I/O
+    and errors; invalid choices or failed writes show an error and allow another choice. Cancelling save skips
+    it without entering the memory-card error screen. The setting is disabled while a request is active.
+    Probe opt-in: `UJL_REPLAY_FILES=1`; `UJL_REPLAY_OPEN` / `UJL_REPLAY_SAVE` supply test paths (empty cancels).
+  - Verified: an imported US replay plays from a raw block and .mcs; checksum failure, truncation, missing file
+    and cancellation return safely; full-card loading leaves the card byte-for-byte unchanged; Start -> NO
+    returns to all candy bars with exactly one file load. Desktop builds and the synthetic smoke test pass
+    with the build flag ON and OFF. Native open dialog -> playback verified on Windows.
+    Save prompt -> export -> load also verified, along with full-card save, cancelled save and failed-write
+    handling (all leave the card unchanged). The save-path probe routes the Replay candy bar to screen 28
+    (`PROBE_POKE=801dae9c,8e069c05,40`, stage 1 via `PROBE_FREEZE=80078ae0,1,40,75`), then confirms at 54 s;
+    it tests the real prompt/builder/continuation with an empty recording, without having to clear a song.
+    A no-input Stage 1 attempt with FORCE_RATING still reached AGAIN?, so that is not a stage-clear test.
 - **Unlock all (src/runtime/unlock.c)**: ORs progress bits into 0x801a5310 every vblank: +0x07 stage mask,
   +0x08/09, +0x0A..0F and +0x1A..1F per-stage flags (0x3f), +0x10..18 mode flags. Saving with it on keeps them.
 - **Sound engine thread / guitar audio**: the game's sound engine is an object whose tick (vtable entry,
@@ -516,14 +557,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   SDL's gamepad list), backgrounding.
 
 ## To do
-- **Replace the replay system with replay files (user request 2026-11-16)**: answering YES to the game's "save replay"
-  prompt opens a save-file dialog and writes the replay to a file anywhere on the computer/device (not the memory
-  card); "load replay" opens an open-file dialog and plays the chosen file. Behind a build/platform flag (and a
-  setting where it makes sense): some devices this port targets have no file browser or user-accessible file system,
-  and they keep the game's own memory-card replays. Needs: the replay data format and where the game builds it (the
-  replay save/load code in the menu overlay COMOD0.MEN), a host file-dialog hook (SDL_ShowSaveFileDialog /
-  SDL_ShowOpenFileDialog, async: the game waits on a flag), and feeding a loaded replay back where the card load would
-  have put it.
+- **Replace the replay system with replay files (done, user request 2026-11-16)**: see "Host replay files" above.
 - **Function names (done, tools/recomp/symbols_jp.txt; user request 2026-11-15)**: `gen.py --symbols` reads
   `addr name` (main exe) and `addr@OVERLAY.NAME name` lines. A named function is emitted as `void name(CPU *c)` with
   `/* F_xxxxxxxx */` above it; the old F_/Onn_ name stays as a #define in recomp_funcs.h / recomp_overlays.h, and the

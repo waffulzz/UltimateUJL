@@ -21,3 +21,7 @@ credits_timeline_step  hook_credits_hold
 hiscore_insert  hook_hiscore_insert
 # Autoplay: after an autoplayed song, skip the system-save and replay-save screens (src/runtime/autoplay.c).
 menu_screen_dispatch  hook_menu_screen
+# Conditional hooks retain the original memory-card path when replay files are disabled.
+replay_directory_entries filter_replay_directory
+replay_slot_picker filter_replay_slots
+replay_card_save filter_replay_save

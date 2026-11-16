@@ -89,3 +89,13 @@
 801c5370@COMOD8.SNG  credits_main_loop         # fades out over 90 frames once 0x801c6368 is set
 801c5168@COMOD8.SNG  credits_timeline_thread
 801c624c@COMOD8.SNG  credits_timeline_step     # called every frame right after the end-flag check
+
+# ---- replay save format and host-file integration
+8001473c temp_buffer_alloc
+800147d0 temp_buffer_release
+8001fe94 replay_directory_entries
+8001ff78 replay_card_load
+80020060 replay_build_save
+8002011c replay_card_save
+8001f8e8 save_checksum
+801c7adc@COMOD0.MEN replay_slot_picker

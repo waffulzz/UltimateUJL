@@ -26,6 +26,7 @@
  * presses (with the line's buttons) chosen by rhythm_fill: the most the game would score, preferring the beat. */
 #include "psx.h"
 #include "recomp.h"
+#include "replay_files.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -509,7 +510,8 @@ void hook_hiscore_insert(CPU *c, uint32_t fn) {
 #define SCR_MAIN_MENU    3
 void hook_menu_screen(CPU *c, uint32_t fn) {
     (void)fn;
-    int id = (int)c->r[4];
+    int id = replay_files_menu_screen((int)c->r[4]);
+    c->r[4] = (uint32_t)id;
     if (log_on > 0) rt_log("autoplay: menu screen %d%s", id, skip_post_saves ? " (skipping saves)" : "");
     if (!skip_post_saves) return;
     if (id == SCR_SYSTEM_SAVE || id == SCR_REPLAY_SAVE || id == SCR_REPLAY || id == SCR_REPLAY_STEP) {

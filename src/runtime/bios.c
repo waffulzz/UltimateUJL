@@ -346,6 +346,10 @@ uint32_t memcard_firstfile(uint32_t pattern, uint32_t dirent);
 uint32_t memcard_nextfile(uint32_t dirent);
 int memcard_erase(uint32_t name);
 int memcard_rename(uint32_t a, uint32_t b);
+/* UJL_CARD_LOG=1: log the game's card file calls with the caller (ra) */
+static int card_log = -1;
+#define CARD_LOG(fmt, ...) do { if (card_log < 0) card_log = getenv("UJL_CARD_LOG") != NULL; \
+    if (card_log) rt_log("card: " fmt "  ra=%08x", __VA_ARGS__, c->r[31]); } while (0)
 
 /* ------------------------------------------------------------ dispatch */
 static int unk_bios;
@@ -463,16 +467,17 @@ static void bios_b0(CPU *c, uint32_t fn) {
     case 0x18: custom_exit = 0; break;
     case 0x19: custom_exit = a0; LOGV("bios: SetCustomExitFromException %08x", a0); break;
     case 0x32: c->r[2] = (uint32_t)memcard_open(a0, a1); LOGI("bios: open(\"%s\", %x) -> %d", (char *)ram_ptr(a0), a1, (int)c->r[2]); break;
-    case 0x33: c->r[2] = (uint32_t)memcard_seek(a0, (int32_t)a1, (int)a2); break;
-    case 0x34: c->r[2] = (uint32_t)memcard_rw(c, 0, a0, a1, a2); break;
+    case 0x33: c->r[2] = (uint32_t)memcard_seek(a0, (int32_t)a1, (int)a2); CARD_LOG("lseek(%d, %d, %d) -> %d", a0, a1, a2, c->r[2]); break;
+    case 0x34: c->r[2] = (uint32_t)memcard_rw(c, 0, a0, a1, a2); CARD_LOG("read(%d, %08x, %x) -> %d", a0, a1, a2, c->r[2]); break;
     case 0x35: /* write: memory card file, or the game's debug text on stdout */
-        c->r[2] = memcard_is_fd(a0) ? (uint32_t)memcard_rw(c, 1, a0, a1, a2) : a2;
+        if (memcard_is_fd(a0)) { c->r[2] = (uint32_t)memcard_rw(c, 1, a0, a1, a2); CARD_LOG("write(%d, %08x, %x) -> %d", a0, a1, a2, c->r[2]); }
+        else c->r[2] = a2;
         break;
-    case 0x36: c->r[2] = (uint32_t)memcard_close(a0); break;
-    case 0x42: c->r[2] = memcard_firstfile(a0, a1); break;
-    case 0x43: c->r[2] = memcard_nextfile(a0); break;
-    case 0x44: c->r[2] = (uint32_t)memcard_rename(a0, a1); break;
-    case 0x45: c->r[2] = (uint32_t)memcard_erase(a0); break;
+    case 0x36: c->r[2] = (uint32_t)memcard_close(a0); CARD_LOG("close(%d)", a0); break;
+    case 0x42: c->r[2] = memcard_firstfile(a0, a1); CARD_LOG("firstfile(\"%s\") -> %s", (char *)ram_ptr(a0), c->r[2] ? (char *)ram_ptr(a1) : "-"); break;
+    case 0x43: c->r[2] = memcard_nextfile(a0); CARD_LOG("nextfile -> %s", c->r[2] ? (char *)ram_ptr(a0) : "-"); break;
+    case 0x44: c->r[2] = (uint32_t)memcard_rename(a0, a1); CARD_LOG("rename(\"%s\", \"%s\") -> %d", (char *)ram_ptr(a0), (char *)ram_ptr(a1), c->r[2]); break;
+    case 0x45: c->r[2] = (uint32_t)memcard_erase(a0); CARD_LOG("erase(\"%s\") -> %d", (char *)ram_ptr(a0), c->r[2]); break;
     case 0x4A: case 0x4B: case 0x4C: case 0x50: c->r[2] = 1; break;
     case 0x4E: memcard_sector(c, 1, a0, a1, a2); break; /* write_card_sector */
     case 0x4F: memcard_sector(c, 0, a0, a1, a2); break; /* read_card_sector */

@@ -12,6 +12,8 @@ Emits:
 overlay function. A named function is emitted as `void name(CPU *c)` instead of F_xxxxxxxx / Onn_xxxxxxxx (the
 old name stays as a #define alias, the dispatch table keeps the address), and override lines may then start with
 the name instead of the address.
+Override targets beginning with hook_ run before the original body. filter_ targets return nonzero to handle
+the call completely, or zero to run the original body (for optional host features with a guest fallback).
 """
 import os
 import re
@@ -227,7 +229,7 @@ class Gen:
         exe = self.exe
         ov = getattr(self, "overrides", {}).get(f.start)
         hook = None
-        if ov and ov[0].startswith("hook_"):  # call a runtime hook first, then the original body
+        if ov and ov[0].startswith(("hook_", "filter_")):  # filter returns true when it handled the call
             hook = ov[0] + "(c, 0x%08xu%s)" % (f.start, "".join(f", 0x{int(a, 16):08x}u" for a in ov[1:]))
             ov = None
         head = f"void {self.name(f.start)}(CPU *c) {{"
@@ -239,7 +241,7 @@ class Gen:
                     f"  {fn_name}(c{args});\n}}")
         out = [head, f"  TRACE_FN(0x{f.start:08x}u);"]
         if hook:
-            out.append(f"  {hook};")
+            out.append(f"  if ({hook}) return;" if hook.startswith("filter_") else f"  {hook};")
         addrs = sorted(f.addrs)
         addrset = f.addrs
         i = 0

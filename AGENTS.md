@@ -118,6 +118,10 @@ There's no unit test suite. Verification means running the game headless or scri
   page and quits, `UJL_SETUP_DROP="a;b"` drops files on it; scripted runs skip it and, once `setup_done=1` is in
   ujl.ini, use only the discs imported there. `UJL_FORCE_RATING=1` keeps a stage at GOOD (BAD distorts the picture).
   The game log is `build/cmake/ujl.log`.
+  `UJL_CARD_LOG=1` logs card file operations and guest callers. Replay files: desktop builds default to
+  `-DUJL_REPLAY_FILES=ON` (iOS defaults OFF); the setting/ini key is `replay_files`. The probe opts in with
+  `UJL_REPLAY_FILES=1`. `UJL_REPLAY_OPEN=path` / `UJL_REPLAY_SAVE=path` answer a file request without a dialog
+  for scripted tests (empty value cancels; errors are logged and cancel). Use only disposable output paths/cards.
 
 ## Architecture (big picture)
 
@@ -133,6 +137,7 @@ There's no unit test suite. Verification means running the game headless or scri
   (`rt_current_overlay_name()`).
 - `overrides_jp.txt` replaces a function with a native one (`name func`) or runs a pre-hook first (`name hook_x`).
   The name comes from `symbols_jp.txt` (with its overlay); a bare `addr` or `addr@COMOD0.MEN` works too.
+  A `filter_` pre-hook returns nonzero when it handled the call, or zero to run the original guest body.
 - SWC2 of SXY registers becomes `gte_store_sxy` (see GTE below).
 
 **Runtime (`src/runtime/`)**, a register-level PS1:

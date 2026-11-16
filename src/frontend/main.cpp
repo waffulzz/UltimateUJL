@@ -2,6 +2,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <atomic>
+#include "replay_files.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -249,6 +250,34 @@ static int g_card_import_mode = 0;            // 0 copy this game's saves, 1 rep
 static void SDLCALL card_pick_cb(void *, const char *const *files, int) {
     if (files && files[0]) { g_card_pick_path = files[0]; g_card_pick = 1; }
 }
+
+#if UJL_REPLAY_FILES
+// SDL can invoke dialog callbacks on a worker. Publish the path, then perform IO/errors on the UI thread.
+static std::atomic<bool> g_replay_picked{false};
+static std::string g_replay_path;
+static std::string g_replay_dialog_error;
+static bool g_replay_cancelled;
+static void SDLCALL replay_pick_cb(void *, const char *const *files, int) {
+    g_replay_cancelled = !files || !files[0];
+    g_replay_dialog_error = files ? "" : SDL_GetError();
+    g_replay_path = g_replay_cancelled ? "" : files[0];
+    g_replay_picked = true;
+}
+static void replay_dialog_tick(SDL_Window *win) {
+    if (g_replay_picked.exchange(false)) {
+        if (!g_replay_dialog_error.empty())
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Replay file", g_replay_dialog_error.c_str(), win);
+        if (!replay_files_complete(g_replay_cancelled ? nullptr : g_replay_path.c_str()))
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Replay file", replay_files_error(), win);
+    }
+    const char *name;
+    int kind = replay_files_take_request(&name);
+    static const SDL_DialogFileFilter filters[] = {
+        {"Um Jammer Lammy replay", "ujlreplay"}, {"PS1 single saves", "mcs;mcb;psx"}, {"All files", "*"}};
+    if (kind == 1) SDL_ShowSaveFileDialog(replay_pick_cb, nullptr, win, filters, 1, name);
+    else if (kind == 2) SDL_ShowOpenFileDialog(replay_pick_cb, nullptr, win, filters, 3, nullptr, false);
+}
+#endif
 
 // ---------------------------------------------------------------- discs (settings "Discs" section)
 static std::string g_jp_disc_path, g_usa_disc_path;   // what this session booted / opened ("" = none)
@@ -749,6 +778,7 @@ int main(int argc, char **argv) {
         memcard_init(1, nullptr);
     }
     g_uncensored = ini_get("uncensored", "1") != "0";   // before boot: censor_init logs it (UJL_FORCE_CENSORED overrides)
+    replay_files_set_enabled(ini_get("replay_files", "1") != "0");
     if (!rt_boot(disc.c_str())) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Ultimate Um Jammer Lammy", "Could not boot the disc image. See console output.", win);
         return 1;
@@ -895,6 +925,9 @@ int main(int argc, char **argv) {
             fprintf(stderr, "touch: menu button -> settings %s\n", g_set.show_overlay ? "open" : "closed");
         }
         if (g_app_background) { SDL_Delay(50); continue; }   // iOS: suspended, no GL (the game waits for replays)
+#if UJL_REPLAY_FILES
+        replay_dialog_tick(win);
+#endif
 
         {
             int fw, fh;
@@ -1241,6 +1274,20 @@ int main(int argc, char **argv) {
             }
             ImGui::SeparatorText("Memory card");
             {
+#if UJL_REPLAY_FILES
+                bool replay_files = replay_files_enabled() != 0;
+                ImGui::BeginDisabled(replay_files_busy() != 0);
+                if (ImGui::Checkbox("Replays as files", &replay_files)) {
+                    replay_files_set_enabled(replay_files);
+                    ini_set("replay_files", replay_files ? "1" : "0");
+                }
+                ImGui::EndDisabled();
+                if (ImGui::BeginItemTooltip()) {
+                    ImGui::TextUnformatted("Save replay opens a file dialog; Replay opens a replay file.\n"
+                                           "Turn this off to use the game's memory-card replay slots.");
+                    ImGui::EndTooltip();
+                }
+#endif
                 char names[15][21];
                 int blocks[15];
                 int n = memcard_list(0, names, blocks, 15);

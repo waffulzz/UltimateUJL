@@ -10,6 +10,17 @@ else()
   set(UJL_IOS OFF)
 endif()
 
+# Native replay dialogs are available on desktop; other targets retain card replays.
+if(UJL_IOS)
+  set(_replay_files_default OFF)
+else()
+  set(_replay_files_default ON)
+endif()
+option(UJL_REPLAY_FILES "Enable host replay files and native file dialogs" ${_replay_files_default})
+if(UJL_IOS AND UJL_REPLAY_FILES)
+  message(FATAL_ERROR "UJL_REPLAY_FILES needs a save-file picker; leave it OFF on iOS")
+endif()
+
 # Without a build type CMake adds no optimization flags: the frontend (hardware renderer replay), ImGui and SDL
 # (audio resampling, input) were built at -O0. recomp/runtime set -O2 themselves; default everything else to Release.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -57,6 +68,7 @@ set(RUNTIME_SOURCES
   src/runtime/patch.c
   src/runtime/censor.c
   src/runtime/autoplay.c
+  src/runtime/replay_files.c
   src/runtime/language.c
   src/runtime/title_logo.c src/runtime/button_swap.c
   src/runtime/spu.c
@@ -70,6 +82,7 @@ set(RUNTIME_SOURCES
 add_library(runtime STATIC ${RUNTIME_SOURCES})
 target_include_directories(runtime PUBLIC src/runtime "${RECOMP_DIR}")
 target_link_libraries(runtime PUBLIC recomp SDL3::SDL3-static)
+target_compile_definitions(runtime PUBLIC UJL_REPLAY_FILES=$<BOOL:${UJL_REPLAY_FILES}>)
 target_compile_options(runtime PRIVATE -Wall -Wno-unused-function -O2)
 
 # Headless boot probe

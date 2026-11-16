@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <SDL3/SDL.h>
 #include "runtime/gpu_rec.h"
+#include "runtime/replay_files.h"
 
 bool rt_boot(const char *disc_path);
 void rt_run(void);
@@ -266,6 +267,7 @@ int main(int argc, char **argv) {
         else disc = argv[i];
     }
     if (!SDL_Init(0)) { fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1; }
+    replay_files_set_enabled(getenv("UJL_REPLAY_FILES") && atoi(getenv("UJL_REPLAY_FILES")) != 0);
     { extern bool aux_disc_open(const char *); const char *u = getenv("UJL_USA_DISC"); aux_disc_open(u ? u : "Um Jammer Lammy (USA).bin"); }
     { extern void memcard_init(int, const char *); const char *cp = getenv("PROBE_CARD"); memcard_init(0, cp ? cp : "build/probe_card1.mcd"); memcard_init(1, NULL); }
     {   /* PROBE_IMPORT=path (PROBE_IMPORT_MODE=1 replaces the card) */
