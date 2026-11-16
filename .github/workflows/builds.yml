@@ -75,7 +75,15 @@ jobs:
           cmake -S . -B build/playable -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DRECOMP_DIR="$repo_path/build/gen_ci"
       - name: Build game and score checks
-        run: cmake --build build/playable --target ujl ujl_score_test
+        run: |
+          set -o pipefail
+          cmake --build build/playable --target ujl ujl_score_test 2>&1 | tee build/playable-build.log
+      - name: Report compiler errors
+        if: failure()
+        run: |
+          if [ -f build/playable-build.log ]; then
+            grep -E 'error:|undefined reference|ld: ' build/playable-build.log | head -20 | sed 's/^/::error::/' || true
+          fi
       - name: Check score recorder
         run: |
           suffix=""
@@ -110,7 +118,15 @@ jobs:
           -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DUJL_IOS_SIGN_IDENTITY=
           -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DRECOMP_DIR="$PWD/build/gen_ci"
       - name: Build game
-        run: cmake --build build/ios-playable --target ujl
+        run: |
+          set -o pipefail
+          cmake --build build/ios-playable --target ujl 2>&1 | tee build/ios-build.log
+      - name: Report compiler errors
+        if: failure()
+        run: |
+          if [ -f build/ios-build.log ]; then
+            grep -E 'error:|undefined reference|ld: ' build/ios-build.log | head -20 | sed 's/^/::error::/' || true
+          fi
       - name: Check device bundle
         run: |
           plutil -lint build/ios-playable/UltimateUJL.app/Info.plist

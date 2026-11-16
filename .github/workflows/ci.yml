@@ -185,6 +185,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Byte-compile every script
         run: python3 -m compileall -q tools tests
       - name: Test generated-code bundle and artifact contents

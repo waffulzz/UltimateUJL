@@ -18,7 +18,9 @@ NAME = re.compile(r"(?:recomp_[a-zA-Z0-9_]+\.[ch]|ov_\d+_\d+\.c|recomp_files\.cm
 
 
 def fingerprint():
-    return {n: hashlib.sha256((ROOT / "tools/recomp" / n).read_bytes()).hexdigest() for n in INPUTS}
+    # Git checkouts can translate source newlines on Windows; the generator input is otherwise identical.
+    return {n: hashlib.sha256((ROOT / "tools/recomp" / n).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+            for n in INPUTS}
 
 
 def pack(args):

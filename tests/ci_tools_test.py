@@ -64,6 +64,14 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "stale"): self.unpack()
         self.assertFalse((self.root / "unpacked").exists())
 
+    def test_source_newlines_do_not_change_fingerprint(self):
+        before = bundle.fingerprint()
+        for name in bundle.INPUTS:
+            p = self.root / "tools/recomp" / name
+            p.write_bytes(p.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+        self.assertEqual(before, bundle.fingerprint())
+        self.unpack()
+
     def test_archive_path_traversal_rejected(self):
         with tarfile.open(self.archive, "w:gz") as tf:
             info = tarfile.TarInfo("../outside.c"); info.size = 3
