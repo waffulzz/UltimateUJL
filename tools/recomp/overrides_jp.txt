@@ -25,3 +25,4 @@ menu_screen_dispatch  hook_menu_screen
 replay_directory_entries filter_replay_directory
 replay_slot_picker filter_replay_slots
 replay_card_save filter_replay_save
+stage_results_apply hook_score_run_finish

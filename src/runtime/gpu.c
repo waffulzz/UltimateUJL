@@ -1,6 +1,7 @@
 /* GP0/GP1 command processing. VRAM is kept here (16bpp, 1024x512) as the texture source of truth. */
 #include "psx.h"
 #include "gpu.h"
+#include "score_delta.h"
 #include <stdlib.h>
 
 uint16_t *g_vram;
@@ -152,6 +153,7 @@ static void emit(const GpuPrim *p) {
                p->v[0].u, p->v[0].v, p->v[p->nverts > 1 ? 2 : 0].u, p->v[p->nverts > 1 ? 2 : 0].v);
     }
     if (g_gpu_backend.prim) g_gpu_backend.prim(p);
+    score_delta_draw(p, emit_raw);
 }
 
 static void do_polygon(void) {

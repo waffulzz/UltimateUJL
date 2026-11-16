@@ -306,6 +306,34 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     (`PROBE_POKE=801dae9c,8e069c05,40`, stage 1 via `PROBE_FREEZE=80078ae0,1,40,75`), then confirms at 54 s;
     it tests the real prompt/builder/continuation with an empty recording, without having to clear a song.
     A no-input Stage 1 attempt with FORCE_RATING still reached AGAIN?, so that is not a stage-clear test.
+- **Live score comparison (src/runtime/score_delta.c, 2026-11-16)**: beside the native score counter, show the
+  signed difference from the personal-best run at the **same song time**. Positive is blue, negative red, zero
+  white; hide it entirely until a completed reference exists. This is emitted into the PS1 GPU stream (both
+  backends), using the game's resident `SCOR_SUJ` score digits and stock `S_PLUS0` / `S_MINUS0` score icons.
+  These 12x12 sprites are at VRAM 945,268 / 939,268 (4bpp), UV 196,12 / 172,12 on the score texture page,
+  and share the digits' palette. (`LETTER_E`'s ASCII `+` table slot is an accented letter.)
+  No font bitmap is shipped, and there is no ImGui gameplay overlay. Match the ones-digit sprite (10x12,
+  tpage 896,256; UV u=32+10*digit, v=0; local y=170, x=52/292). Keep the original CLUT; modulation supplies the
+  tint. The delta sits 8 native pixels to the right of P1, or to the left of P2's whole score in versus, and
+  follows the normal 2D pillarboxing at all aspect ratios. Co-op uses its shared score; COM counters get no delta.
+  - Sample signed `player_score` (80019504, meter at 80071dbc; versus P2 +10) against `song_time_get`
+    (80019244, clock at 80078af8), keeping only score changes. Begin at the first counter, not overlay loading
+    (the player state is initialized later). A rewind discards the pending run. `stage_results_apply`
+    (800142e8), called after scene cleanup and before high-score/name-entry decisions, takes positive for a
+    completed run and zero/negative for failure/quit. Its hook includes a final award after the last visible HUD.
+    Only a complete, unassisted human run with a higher final score replaces the reference; never mix the
+    per-time maxima from different runs. Replay, attract and any Autoplay use cannot write references.
+  - Store only times/scores in `score_traces/` beside the executable (iOS: app Documents). Separate by stage,
+    scene variant (character/mode), play mode, both input sources (including COM difficulty), selected name
+    profile (801a5334), censored/uncensored content, and player. This is separate from the memory card's top-3
+    final scores: old card scores have no song-time trace. `UJLPB001`: 48-byte little-endian header (count, end
+    time, final score, seven key words), then `{i32 time, i32 score}` points. Validate size/keys/ranges/ordering;
+    write an adjacent temporary file and rename only after a complete write. At most 4096 points per player;
+    overflowed runs are discarded. `UJL_SCORE_TRACE_DIR` isolates test fixtures; `UJL_SCORE_LOG=1` logs sampling.
+  - Verification: `ujl_score_test` (explicit build target, synthetic RAM only) covers native primitives, matching
+    song times, persistence/replacement, failure/Autoplay/replay exclusions, final awards, corrupt files,
+    separate versus players and shared co-op. Disc-free smoke passes; Stage 6 checked with the software renderer
+    and the hardware renderer at 21:9 using isolated reference fixtures.
 - **Unlock all (src/runtime/unlock.c)**: ORs progress bits into 0x801a5310 every vblank: +0x07 stage mask,
   +0x08/09, +0x0A..0F and +0x1A..1F per-stage flags (0x3f), +0x10..18 mode flags. Saving with it on keeps them.
 - **Sound engine thread / guitar audio**: the game's sound engine is an object whose tick (vtable entry,
@@ -724,12 +752,6 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   between consecutive frames' primitive lists (match prims frame to frame, lerp vertices), with a fallback
   to plain 60 when matching fails. Research item: may not be clean for every scene.
 - SPU noise (reverb and memory card saves are done; Stage 8 has no captions).
-- **Score comparison vs personal best (user request 2026-11-15)**: next to the score counter, show how the current
-  run compares to the best run at the same point in the song: ahead (improving), on track, or behind
-  (underperforming), e.g. a +/- delta coloured green/yellow/red. Needs: read the live score from RAM (player struct
-  near 0x80071dbc), sample it against song time (0x80078af8) during play, save the trace of each stage's best run per
-  stage/mode/difficulty in a port-side file (not the memory card), and draw the delta as a port overlay beside the
-  game's score (pillarbox-aware). Optional: compare against the best run's final score instead of the trace.
 - **Discord Rich Presence (user request 2026-11-15)**: show what's being played (menu / stage name / Lammy or
   PaRappa mode, maybe the rating), optional and off-able in settings. Read the state from game RAM (current scene
   entry at 0x801a23ec). Talk to the Discord client over its local IPC pipe (discord-ipc-0) directly, so no SDK

@@ -72,7 +72,9 @@ Settings persist in `build/cmake/ujl.ini`. The USA disc is found automatically n
 
 ## Testing and debugging
 
-There's no unit test suite. Verification means running the game headless or scripted and inspecting output.
+Verification primarily means running the game headless or scripted and inspecting output. The focused
+`ujl_score_test` target checks score traces/native HUD primitives using synthetic RAM (no disc needed):
+`cmake --build build/cmake --target ujl_score_test`, then `build/cmake/ujl_score_test.exe build`.
 
 - **CI smoke test** (`tests/smoke/smoke.py`, run by `.github/workflows/ci.yml` on Windows, Linux and macOS). CI has no
   disc, so it assembles a small synthetic PS-X EXE onto a generated ISO image, recompiles it with `gen.py`, builds
@@ -118,6 +120,8 @@ There's no unit test suite. Verification means running the game headless or scri
   page and quits, `UJL_SETUP_DROP="a;b"` drops files on it; scripted runs skip it and, once `setup_done=1` is in
   ujl.ini, use only the discs imported there. `UJL_FORCE_RATING=1` keeps a stage at GOOD (BAD distorts the picture).
   The game log is `build/cmake/ujl.log`.
+  Live score comparisons store completed unassisted PB traces beside the executable in `score_traces/`.
+  `UJL_SCORE_TRACE_DIR=path` isolates reference files for testing; `UJL_SCORE_LOG=1` logs their sampling/loading.
   `UJL_CARD_LOG=1` logs card file operations and guest callers. Replay files: desktop builds default to
   `-DUJL_REPLAY_FILES=ON` (iOS defaults OFF); the setting/ini key is `replay_files`. The probe opts in with
   `UJL_REPLAY_FILES=1`. `UJL_REPLAY_OPEN=path` / `UJL_REPLAY_SAVE=path` answer a file request without a dialog
@@ -150,7 +154,7 @@ There's no unit test suite. Verification means running the game headless or scri
 - `gte.c`: GTE, plus a recent-SXY cache and a RAM-address map that give the renderer 3D tagging and sub-pixel positions.
 - `gpu.c`: decodes GP0 into `GpuPrim`.
 - `memcard.c`, `sio.c`: memory card.
-- `fbstream.c`, `unlock.c`, `autoplay.c`, `censor.c`: game-specific HLE and hooks.
+- `fbstream.c`, `unlock.c`, `autoplay.c`, `censor.c`, `score_delta.c`: game-specific HLE and hooks.
 
 **Rendering path.** `gpu.c` emits primitives to a backend. `gpu_soft.c` rasterizes into `g_vram`. `gpu_rec.c` records
 the stream for the frontend; while recording, the software raster is skipped, so `g_vram` lacks drawn pixels.

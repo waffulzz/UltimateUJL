@@ -13,6 +13,8 @@
 800190d8  scene_for_stage             # stage+10 for sub 0/1/5, else stage
 800190fc  scene_column_for_stage      # 0 = SNG for sub 0/3/4, 1 = CMP/COP
 80016720  stage_entry_set             # stores the current stage-table entry at 0x801a23ec
+800142e8  stage_results_apply         # positive result = complete, otherwise quit/fail; before menu/high-score decisions
+80019504  player_score                # signed score at player_meter(p) +0
 
 # ---- song clock, timeline, stage frame
 80014c54  cd_getloc_callback          # GetlocL result -> raw song clock 0x801a2360

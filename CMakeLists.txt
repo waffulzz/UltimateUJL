@@ -69,6 +69,7 @@ set(RUNTIME_SOURCES
   src/runtime/censor.c
   src/runtime/autoplay.c
   src/runtime/replay_files.c
+  src/runtime/score_delta.c
   src/runtime/language.c
   src/runtime/title_logo.c src/runtime/button_swap.c
   src/runtime/spu.c
@@ -90,6 +91,11 @@ if(NOT UJL_IOS)
   add_executable(ujl_probe src/probe_main.c)
   target_include_directories(ujl_probe PRIVATE src)
   target_link_libraries(ujl_probe PRIVATE runtime)
+  # Focused native HUD/trace checks; synthetic RAM only, no disc assets.
+  add_executable(ujl_score_test EXCLUDE_FROM_ALL tests/score_delta_test.c src/runtime/score_delta.c)
+  target_include_directories(ujl_score_test PRIVATE src/runtime)
+  target_link_libraries(ujl_score_test PRIVATE SDL3::SDL3-static)
+  target_compile_options(ujl_score_test PRIVATE -UNDEBUG)
 endif()
 
 # Dear ImGui (vendored)

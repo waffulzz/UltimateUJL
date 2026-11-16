@@ -3,6 +3,7 @@
 #include <SDL3/SDL_main.h>
 #include <atomic>
 #include "replay_files.h"
+#include "score_delta.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -779,6 +780,7 @@ int main(int argc, char **argv) {
     }
     g_uncensored = ini_get("uncensored", "1") != "0";   // before boot: censor_init logs it (UJL_FORCE_CENSORED overrides)
     replay_files_set_enabled(ini_get("replay_files", "1") != "0");
+    score_delta_init((g_base_dir + "score_traces").c_str());
     if (!rt_boot(disc.c_str())) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Ultimate Um Jammer Lammy", "Could not boot the disc image. See console output.", win);
         return 1;

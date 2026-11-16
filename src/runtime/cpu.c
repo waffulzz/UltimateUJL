@@ -203,6 +203,7 @@ static void on_vblank(void *ctx) {
     host_vblank();
     { extern void memcard_tick(void); memcard_tick(); }
     { extern void unlock_tick(void); unlock_tick(); }
+    { extern void score_delta_tick(void); score_delta_tick(); }
     vblank_at += NTSC_CYCLES_PER_FRAME;
     sched_add(vblank_at, on_vblank, NULL, EV_VBLANK);
 }
