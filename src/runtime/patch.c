@@ -383,9 +383,9 @@ static const TtWord *tt_find(int row, int u) {
     return NULL;
 }
 
-/* Pre-hook on the menu overlay's sprite submit (O00_801cbc4c, a1 = sprite: +8 x, +10 y, +12 u, +13 v, +14 clut,
+/* Pre-hook on the menu overlay's sprite submit (menu_sprite_submit, a1 = sprite: +8 x, +10 y, +12 u, +13 v, +14 clut,
    +16 w, +18 h, +24 draw-mode word). Sprites from the JP word sheet are pointed at the US sheet:
-   - from the Stage Select builder (O00_801cd2a0), whose tables now hold the US words: only v/clut/page/height;
+   - from the Stage Select builder (stage_select_tooltip_build), whose tables now hold the US words: only v/clut/page/height;
    - from the other builders: each JP word (or run of adjacent JP words) maps to the matching US word(s), and
      words after the first on a line move by the accumulated width difference plus a space.
    Anything unrecognized is left on the JP sheet, which stays in VRAM untouched. */
@@ -491,7 +491,7 @@ static void english_credits_song(void) {
 
 /* ---- English memory card messages (menus) ----
    The JP menus show each memory card message as a pre-rendered Japanese image (AL_*.TIM in S0/CMP0.INT), drawn by
-   O00_801cc188(msg) as one sprite from the menu's sprite table (COMOD0.MEN: 12-byte entries at overlay +0x18194:
+   menu_card_message_draw(msg) as one sprite from the menu's sprite table (COMOD0.MEN: 12-byte entries at overlay +0x18194:
    u16 tpage, u8 u, u8 v, u16 w, u16 h, u16 clut x, u16 clut y; message k -> sprite via a 13-byte table at +0x5c8),
    centered, with the dialog box sized from the entry's w/h. The US version draws the same 12 messages as strings
    with the English font (US COMOD0.MEN: pointer table at +0x814, message k = string k-1). Here: the entries' w/h are
@@ -659,10 +659,10 @@ void patch_init(void) {
 }
 
 /* Staff roll length: the JP roll (COMOD8.SNG) ends ~82 s into the song, when its timeline raises event bit 0x100
-   in the per-frame event buffer (0x80078330). The timeline thread (O41_801c5168) then sets the overlay flag
-   0x801c6368, and the main loop (O41_801c5370) fades out over 90 frames and returns to the menu. That suits the JP
+   in the per-frame event buffer (0x80078330). The timeline thread (credits_timeline_thread) then sets the overlay flag
+   0x801c6368, and the main loop (credits_main_loop) fades out over 90 frames and returns to the menu. That suits the JP
    instrumental, but the US vocal song swapped in here runs the whole 145.8 s of channel 7 and was cut mid-verse.
-   While the US song plays, this hook (on O41_801c624c, which the timeline thread calls every frame right after
+   While the US song plays, this hook (on credits_timeline_step, which the timeline thread calls every frame right after
    the flag check, with no yield in between) holds the flag clear, so the roll stays on its final copyright card.
    The cue fires only once, so the hook raises the flag itself when the CD gets within CREDITS_FADE_SECTORS of the
    song's last sector: the 90-frame fade then covers the final chord and the scene stops the CD at the end of the

@@ -4,23 +4,23 @@
  * any player's presses (rt_pad_state ORs them in, so the game's own pad driver reads them).
  *
  * What the game keeps (main executable, shared by every stage):
- *   song time      0x80078af8 (F_80019244); one chart slot = 24 time units (F_8001b8b0: slot = time / 24). The game
+ *   song time      0x80078af8 (song_time_get); one chart slot = 24 time units (stage_frame: slot = time / 24). The game
  *                  logic runs every second vblank: it advances the song time by 5-7 units, then reads the pad and
- *                  stamps each press with the new time (F_8001b0a4 -> F_80017bc4 records it in a tick grid at
+ *                  stamps each press with the new time (player_read_input -> tick_grid_record records it in a tick grid at
  *                  0x801a2410, 4 time units per tick).
  *   chart          4-byte records {s16 slot, u8 button id, u8 note count}, sorted by slot, cursor at 0x80071df0.
  *                  A record is a note the player is expected to play at that slot; flags 0x1000 in the u16 at +2 mark
  *                  non-notes; the first record of a line carries its note count. Ids 1-6 = Triangle, Circle, Cross,
  *                  Square, L1, R1 (table 0x8005b848).
  *   answer window  player 1: slots 0x80071ccc..0x80071cce (32767 = closed). It opens a few slots before the line's
- *                  first note and is scored when it closes (F_8001c214 -> F_800187e8 -> F_80018354).
- *   phrase score   0x80071cd8, COOL threshold 0x80071cda (only valid at the moment of rating, F_80018a08): no
+ *                  first note and is scored when it closes (answer_window_close -> answer_window_score -> phrase_score).
+ *   phrase score   0x80071cd8, COOL threshold 0x80071cda (only valid at the moment of rating, phrase_rate): no
  *                  presses / <= 0 bad, < threshold good, >= threshold cool; meter 0x80071dc0 (0-2 COOL, 3-6 GOOD,
  *                  7-10 BAD, 11+ AWFUL).
- * The score (F_80018354, tally at 0x801a2750): +3 per press of a button the line uses, within ~8 time units of a slot;
+ * The score (phrase_score, tally at 0x801a2750): +3 per press of a button the line uses, within ~8 time units of a slot;
  * minus the note count if the first press isn't the line's first note; a penalty per press of another button;
  * -1.5 per press more or fewer than the line's note count; 0 unless every button of the line was pressed; plus a
- * rhythm bonus (F_800182a0): each pair of slots (even, odd) is classed as "odd only", "both", "even only" or "empty"
+ * rhythm bonus (rhythm_bonus): each pair of slots (even, odd) is classed as "odd only", "both", "even only" or "empty"
  * (table 0x8005b770); a group that has shown all four pays 6 + 9 + 15 + 18 = 48 (table 0x8005b774), and groups repeat.
  * An exact copy scores 3 per note, which stays GOOD (the threshold is ~40). Auto-COOL keeps the chart notes and adds
  * presses (with the line's buttons) chosen by rhythm_fill: the most the game would score, preferring the beat. */
@@ -39,8 +39,8 @@ int g_autoplay_used;       /* the current (or last) song was played with either 
 #define ACTIVE_MASK 0x80071db8u   /* bit p: player p takes part */
 #define SLOT_UNITS  24
 /* Player p's block: 0x80071cb8 + 96p. +20/+22 answer window, +48 input source (0/1 = controller port, 2-4 = the
-   game's COM player, 5 = nobody; F_8001b0a4), +55 fever bits, +57 fever ring, +92 fever table. Phrase score at
-   0x80071cd8 + 96p. Meter: player struct 0x80071dbc (+4), one per player in versus (+10 each, F_80019254). */
+   game's COM player, 5 = nobody; player_read_input), +55 fever bits, +57 fever ring, +92 fever table. Phrase score at
+   0x80071cd8 + 96p. Meter: player struct 0x80071dbc (+4), one per player in versus (+10 each, player_meter). */
 #define PBLOCK(p)   (0x80071cb8u + 96u * (uint32_t)(p))
 #define WIN_START(p) (PBLOCK(p) + 20u)
 #define WIN_END(p)  (PBLOCK(p) + 22u)
@@ -153,12 +153,12 @@ static void rhythm_fill(int ws, int we, const uint8_t *note_id, int first, int n
     }
 }
 
-/* Auto-FEVER: in a COOL window the stage script hands player 1 a fever table (F_8001cbf0 copies it from the stage's
+/* Auto-FEVER: in a COOL window the stage script hands player 1 a fever table (script_set_fever_table copies it from the stage's
    list into 0x80071d14 = block +92; 0 outside COOL windows). It holds six 32-byte records, one per fever level
    (colour): {u16 1, u16 100, u16 30, s16 -15, s16 -50, u8 code[8], u8 0xff[8], u16 0, u32 next} with code bytes
    0xF0 | button id and 0 for a rest; they're the rows the loading screen shows with "Unlock all". Each on-time press
-   writes its button id into a 32-slot ring (block +57, slot mod 32; F_80017784), and at every slot boundary
-   F_800178b0 compares the last 8 slots with each code (low nibbles; a rest needs an empty slot). A match sets fever
+   writes its button id into a 32-slot ring (block +57, slot mod 32; fever_ring_press), and at every slot boundary
+   fever_check compares the last 8 slots with each code (low nibbles; a rest needs an empty slot). A match sets fever
    bit k (block +55), refreshes its 4-phrase timer (block +90) and clears the ring. So a code is 8 consecutive slots,
    one step per 16th note. The codes are played back to back from the window's first beat, cycling through all six
    so the effects stack; any slots left over get the rhythm fill. */
@@ -169,7 +169,7 @@ static int fever_fill(int ws, int we) {
     uint32_t t = mem_r32(FEVER_TABLE(cur_p));
     if (!guest_ptr_ok(t)) return 0;
     /* The player's fever turn: block +12/+14 hold the slot range [start, end) in which its presses are filed into the
-       fever ring (F_8001b8b0 calls F_80017784 only for a slot below +14), 32767 outside it. Set when the window opens.
+       fever ring (stage_frame calls fever_ring_press only for a slot below +14), 32767 outside it. Set when the window opens.
        In versus the COOL windows alternate between the players (Stage 6: player 1 368, 432, 496; player 2 400, 464),
        so codes entered in the other player's window were lost. */
     int f0 = (int16_t)mem_r16(PBLOCK(cur_p) + 12u), f1 = (int16_t)mem_r16(PBLOCK(cur_p) + 14u);
@@ -217,7 +217,7 @@ static int fever_fill(int ws, int we) {
 }
 
 /* Auto-COOL's plan for a line (window [ws, we] with chart notes; replaces the chart notes in the plan). The scorer
-   (F_80018354) doesn't require each chart note: it wants the first press to be the line's first note (slot and
+   (phrase_score) doesn't require each chart note: it wants the first press to be the line's first note (slot and
    button), every button the line uses pressed at least once, the right number of presses (-1.5 for each one more or
    fewer than the line's note count), +3 per press of a line button on time, and pays the rhythm bonus per group of
    slot pairs showing all four patterns. Lines that fill every slot with notes leave no room for "empty" or "odd only"
@@ -335,7 +335,7 @@ static void make_plan(int ws, int we) {
         && (int16_t)mem_r16(PBLOCK(cur_p ^ 1) + 12u) != NO_WINDOW) return;
     if (first < 0 && !cool) return;
     /* Fever codes: the fever check runs whenever the game has handed the player a fever table, and at COOL the scorer
-       takes its no-teacher path (any button counts, F_80018354 with rating 0), so the codes can replace a line's
+       takes its no-teacher path (any button counts, phrase_score with rating 0), so the codes can replace a line's
        notes. Needed in PaRappa mode and versus, where the teacher keeps giving lines during COOL. */
     if (g_autoplay == 3 && cool && guest_ptr_ok(mem_r32(FEVER_TABLE(cur_p)))) {
         Press keep[MAX_PLAN];
@@ -383,7 +383,7 @@ static uint16_t player_buttons(int p, int port) {
         }
     }
     /* Calibration: find the stamp the game recorded for the last press in this player's tick grid (0x801a2410 +
-       396p, 6 + ((stamp + 12) / 4) mod 384 holds the button id; F_80017bc4) and fold the difference from the
+       396p, 6 + ((stamp + 12) / 4) mod 384 holds the button id; tick_grid_record) and fold the difference from the
        prediction into a running correction. Solo stamps came out ~6 units after the decision (the next logic step),
        real 2P co-op stamps at about the decision time, so a fixed prediction filed 2P fever presses a slot early. */
     if (P->pend_frames > 0) {
@@ -482,7 +482,7 @@ uint16_t autoplay_buttons(int port) {
     return out[port];
 }
 
-/* High scores: F_8001e7a0(stage, ?, ?, name, score) inserts a score into the stage's top-3 table (system data block,
+/* High scores: hiscore_insert(stage, ?, ?, name, score) inserts a score into the stage's top-3 table (system data block,
    entries {name[8], u16 score} from 0x801a5348), called after the name entry. Its insert only happens when an
    entry's score is lower than the new one, so a song played with Autoplay/Auto-COOL gets score 0 here (the fifth
    argument, on the caller's stack at sp+16) and nothing is inserted; the name entry itself still runs. */
@@ -495,8 +495,8 @@ void hook_hiscore_insert(CPU *c, uint32_t fn) {
 }
 
 /* After a song played with Autoplay/Auto-COOL/Auto-FEVER, the system-save and replay-save prompts are skipped and the
-   menu goes straight back to the candy bars. The menu overlay (COMOD0.MEN) runs its screens as a loop: O00_801c5f44
-   calls O00_801c99c4(screen), which dispatches through the handler table at 0x801db0f0 and returns the next screen
+   menu goes straight back to the candy bars. The menu overlay (COMOD0.MEN) runs its screens as a loop: menu_screen_loop
+   calls menu_screen_dispatch(screen), which dispatches through the handler table at 0x801db0f0 and returns the next screen
    (-1 ends). This pre-hook swaps those screens for the main menu while the skip is armed; the skip is armed when an
    autoplayed song ends and disarmed once the main menu shows, so Load & Save from the candy bars is untouched.
    UJL_AUTOPLAY_LOG logs every screen number. */

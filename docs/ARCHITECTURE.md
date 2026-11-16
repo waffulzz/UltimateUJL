@@ -87,7 +87,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   - Captions: **the JP release has its own LANGUAGE option** (main menu: ENGLISH / Japanese) and ships the
     final English subtitles and lyrics. That's why every JP overlay carries English timelines byte-identical to
     the USA ones. The setting is the word at 0x801a5338 (settings block 0x801a5310 + 0x28): 5 = Japanese,
-    0 = English. The boot settings init F_8001e498 stores 5, then calls F_8001e42c. `hook_default_language`
+    0 = English. The boot settings init (settings_init) stores 5, then calls settings_init_records. `hook_default_language`
     (src/runtime/language.c, overrides_jp.txt) changes it to 0 at that call, so the game boots in English and
     the in-game LANGUAGE menu still works. `UJL_JAPANESE=1` keeps Japanese. (An earlier hand-rolled caption
     hook re-drew the English lines itself. Retired: attic/captions.c.old.)
@@ -106,14 +106,14 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   - **The JP disc already contains the final English captions.** JP COMOD0.MEN has the caption timeline at
     file 0x16960 (USA: 0x12d94). It has the same 30 records with identical timing, and its strings are byte-
     identical to the USA ones (checked by hash). The JP game never reads it: a read-watch saw no access during
-    the intro. The JP code calls the same renderer (JP F_8002623c / F_800261f8) with a NULL text field and
+    the intro. The JP code calls the same renderer (JP caption_render_vram / caption_draw) with a NULL text field and
     shows the pre-rendered Japanese sheet instead.
-  - JP equivalents of the USA renderer: F_800261f8 (=US 800260b0), F_80025e74 (=US 80025d2c), F_8002623c
+  - JP equivalents of the USA renderer: caption_draw (=US 800260b0), caption_draw_glyphs (=US 80025d2c), caption_render_vram
     (=US 800260f4). Overlay caller JP 0x801cb4d4 (=US 0x801cbf04) draws obj[1016] (sheet) or obj[1012].
-    USA loads its caption timeline in overlay F_801cb868 (JP F_801cae58) from a pointer variable (US 0x801d7c88,
+    USA loads its caption timeline in overlay F_801cb868 (JP caption_timeline_load) from a pointer variable (US 0x801d7c88,
     JP 0x801db348). On JP that variable ends up pointing at a different (sequence) table. The branch that makes
     that choice isn't identified yet. Next: read-watch/write-watch that variable and the scene setup
-    (JP F_801cad58 picks directory entry 0 at file 0x17b64), or, failing that, hook JP F_800261f8 and feed it the
+    (JP caption_scene_setup picks directory entry 0 at file 0x17b64), or, failing that, hook JP caption_draw and feed it the
     English line for the current time from the JP-resident timeline.
   - Tooling: the recompiler supports `hook_*` overrides (call a runtime hook, then run the original). The probe
     supports a debug write-watch (`PROBE_WATCH_CLUT`/`PROBE_WATCH_AT`) and prim dumps (`PROBE_DUMP_AT`).
@@ -262,8 +262,8 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
 - **Unlock all (src/runtime/unlock.c)**: ORs progress bits into 0x801a5310 every vblank: +0x07 stage mask,
   +0x08/09, +0x0A..0F and +0x1A..1F per-stage flags (0x3f), +0x10..18 mode flags. Saving with it on keeps them.
 - **Sound engine thread / guitar audio**: the game's sound engine is an object whose tick (vtable entry,
-  F_8004cca4 -> F_80051784 flushes pending key-off/key-on masks) runs in its own guest thread (body
-  F_800543bc). It's scheduled by writing PCB->current TCB (*(0x108)) directly (F_8005430c) and relying on the
+  sound_engine_tick -> sound_flush_key_masks flushes pending key-off/key-on masks) runs in its own guest thread (body
+  sound_thread_main). It's scheduled by writing PCB->current TCB (*(0x108)) directly (sound_thread_schedule) and relying on the
   BIOS to resume that thread on exception return. bios_exception now honours that (exc_thread_switch).
   Without it, voices queued in the key-on mask (Lammy's guitar notes, voice lines) were set up and never
   keyed on.
@@ -274,13 +274,13 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   buffers (1536 bytes from 0x800/0xA00), process it (muting when the player misses), and DMA 256 bytes into a
   512-byte ring at 0x7FE00 = the reverb work area (mBASE 0xFFC0). The reverb unit plays it: master enable
   off (no buffer writes), every reverb register 0, vLOUT/vROUT 0x4800, so the output is ring[pos] * vLOUT at
-  22050 Hz. Two things were missing: (1) libspu's SpuSetTransferStartAddr (F_8004e554) rejects addresses
+  22050 Hz. Two things were missing: (1) libspu's SpuSetTransferStartAddr rejects addresses
   below 0x1010; the game nops that check (bnez at 0x8004e56c) at init, which recompiled code can't see, so
   hle_spu_set_transfer_addr skips the check once the word there is no longer 0x1440000b. (2) spu.c had no
   voice 1/3 capture and no reverb. Reverb is now the public formula (full IIR/comb/APF, writes gated by
   SPUCNT bit 7), with the buffer position locked to the capture counter (the game times its writes by it).
   Measured: output = voice 1 delayed ~17 ms, correlation 0.84. UJL_RVB_DUMP=file writes reverb out / v1 / v3.
-- **Rating (debug)**: player struct 0x80071dbc (+2 rating, +4 meter); rating = table[meter] (F_80019580, table
+- **Rating (debug)**: player struct 0x80071dbc (+2 rating, +4 meter); rating = table[meter] (rating_from_meter, table
   0x80010b0c: 0-2 COOL, 3-6 GOOD, 7-10 BAD, 11+ AWFUL). UJL_FORCE_RATING=0..3 pins it (hook_force_rating).
   Pinning COOL doesn't start the COOL freestyle; that needs a high phrase score.
 - **Widescreen HUD (GTE sprites)**: the head flip and the spinning button symbols are 2D sprites the HUD
@@ -315,16 +315,16 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   sheet TIM at (832,350): JP 64x98 with 14-px rows (CLUT 832,448), US 64x112 with 16-px rows (CLUT 832,462). Both
   list the same words in the same order per row. The US sheet is written to free VRAM at (960,256) (CLUT
   960,368) whenever the game uploads the JP sheet (tooltip_note_upload); the JP sheet stays untouched.
-  The menu overlay submits each word through O00_801cbc4c (sprite struct: +8 x, +10 y, +12 u, +13 v, +14 clut,
+  The menu overlay submits each word through menu_sprite_submit (sprite struct: +8 x, +10 y, +12 u, +13 v, +14 clut,
   +16 w, +18 h, +24 draw mode); a pre-hook (overlay-scoped override "801cbc4c@COMOD0.MEN", new in gen.py)
-  retargets sheet sprites to the US sheet: the Stage Select builder (O00_801cd2a0: 38 messages x 5 slots of x
+  retargets sheet sprites to the US sheet: the Stage Select builder (stage_select_tooltip_build: 38 messages x 5 slots of x
   and u/v/w tables at 0x801c5848..) gets its tables rewritten from the US overlay's (US builder O00_801cdcbc,
   tables at 0x801c6198.., overlay base 0x801c5750), so only v/clut/page/height change; the other seven builders
   keep JP tables and each JP word rect maps to its US word via tt_words (coordinates only), with x shifted by
   the accumulated width difference. Unknown words stay Japanese (logged once as "tooltip: unmapped JP word").
   UJL_JP_TOOLTIPS=1 disables it.
 - **English memory card messages (patch.c english_mc_messages / mc_text_filter)**: the JP menus draw each of 12
-  messages as one pre-rendered image (AL_*.TIM) via O00_801cc188(msg): msg -> sprite through a 13-byte table
+  messages as one pre-rendered image (AL_*.TIM) via menu_card_message_draw(msg): msg -> sprite through a 13-byte table
   (COMOD0.MEN +0x5c8), sprite table at +0x18194 (12-byte entries: u16 tpage, u8 u, u8 v, u16 w, u16 h, u16 clut
   x, y), sprite centered, box sized from w/h. The US draws the same messages as strings (US COMOD0.MEN pointer
   table +0x814; JP msg k = US string k-1). At boot (USA disc present) the entries' w/h are set to the English text
@@ -353,21 +353,21 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   uses 0-6). The US file has the same size and layout; only channel 7 differs (vocal version). patch_sector serves
   channel-7 sectors of that file from the USA disc. UJL_JP_CREDITS_SONG=1 disables it.
 - Stage table in SCPS_180.11: 0x128-byte entries from 0x8005841c (scene 1 SNG), 3 per stage for 2-7 (SNG/CMP/COP),
-  scene 8 (staff roll) at 0x80059a14. F_80016720(entry) stores the current entry at 0x801a23ec.
+  scene 8 (staff roll) at 0x80059a14. stage_entry_set(entry) stores the current entry at 0x801a23ec.
   PROBE_COPY=dst,src,len,sec copies guest memory once (e.g. scene 8's entry over Stage 1's).
-- **Scene selection**: the loader F_80013e8c maps the stage/sub pair at 0x80078ae0/e4 to a scene with F_800190d8
-  (stage+10 for sub 0/1/5, else stage) and a column with F_800190fc (0 = SNG for sub 0/3/4, 1 = CMP/COP). The
+- **Scene selection**: the loader scene_loader maps the stage/sub pair at 0x80078ae0/e4 to a scene with scene_for_stage
+  (stage+10 for sub 0/1/5, else stage) and a column with scene_column_for_stage (0 = SNG for sub 0/3/4, 1 = CMP/COP). The
   overlay entry comes from the table at 0x8005b3b0 (48 bytes per scene, 16 per column: entry fn, stage-table data,
   next scene). Stage 1 story is stage 1 sub 0 = scene 11 (COMOD11.SNG); the staff roll is scene 8 column 0
-  (stage 8 sub 3), overlay entry O41_801c55e4. Debug: UJL_FORCE_SCENE=8,3 turns a Stage 1 story start into the
+  (stage 8 sub 3), overlay entry credits_entry. Debug: UJL_FORCE_SCENE=8,3 turns a Stage 1 story start into the
   staff roll (hook_force_scene, unlock.c). Probe: `UJL_FORCE_SCENE=8,3 ... -press 15:start -press 20:start
   -press 36:down -press 38:circle -press 44:circle -press 50:circle`; the song starts at ~54 s.
 - **Credits song cut off (fixed, patch.c hook_credits_hold)**: the JP staff roll ends ~82 s into the song: its
-  timeline raises event bit 0x100 (buffer 0x80078330), the timeline thread O41_801c5168 sets the overlay flag
-  0x801c6368, and the main loop O41_801c5370 (which also exits on a skip button or song-state bit 0x20000000 of
+  timeline raises event bit 0x100 (buffer 0x80078330), the timeline thread credits_timeline_thread sets the overlay flag
+  0x801c6368, and the main loop credits_main_loop (which also exits on a skip button or song-state bit 0x20000000 of
   0x801a2364) fades out over 90 frames. The JP and US channel-7 songs both fill the whole 145.8 s of ST1.XA; the JP
   roll just fades its instrumental early, which cut the US vocal song mid-verse. While the US song is swapped in,
-  a hook on O41_801c624c (called by the timeline thread right after the flag check, no yield between) holds the
+  a hook on credits_timeline_step (called by the timeline thread right after the flag check, no yield between) holds the
   flag clear, so the roll rests on its final logo card, and raises it itself 120 sectors (~1.6 s) before the
   song's last channel-7 sector: the cue is one-shot, and left alone the CD streams on into the next file. Probe:
   hold at ~136 s, fade at ~198 s, Stage Select at ~201 s.
@@ -524,13 +524,19 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   replay save/load code in the menu overlay COMOD0.MEN), a host file-dialog hook (SDL_ShowSaveFileDialog /
   SDL_ShowOpenFileDialog, async: the game waits on a flag), and feeding a loaded replay back where the card load would
   have put it.
-- **Name every function we hook into or work with (user request 2026-11-15)**: give each one a real symbol instead of
-  F_xxxxxxxx / Onn_xxxxxxxx (e.g. F_8001e7a0 -> hiscore_insert, F_80018354 -> phrase_score, F_8001b8b0 ->
-  stage_frame, F_800169ac -> movie_next_frame, O02_801c66e0 -> stage1_pad_pressed, F_80017784 -> fever_ring_press,
-  F_800178b0 -> fever_check, F_8001cbf0 -> script_set_fever_table). Keep a symbol map
-  (address -> name, plus overlay for Onn_) that gen.py reads, emitting the name as the C function (with the address
-  in a comment) and an address alias for call_indirect; overrides_*.txt and the notes can then use names. Start with
-  everything the notes, hooks and overrides mention.
+- **Function names (done, tools/recomp/symbols_jp.txt; user request 2026-11-15)**: `gen.py --symbols` reads
+  `addr name` (main exe) and `addr@OVERLAY.NAME name` lines. A named function is emitted as `void name(CPU *c)` with
+  `/* F_xxxxxxxx */` above it; the old F_/Onn_ name stays as a #define in recomp_funcs.h / recomp_overlays.h, and the
+  dispatch tables keep the address (call_indirect unchanged) plus the name string, so `rt_dump_stack` (PROBE_STACK_AT,
+  PROBE_WATCH, call_indirect failures) prints `8001e7a0 hiscore_insert`; `rt_func_name()` looks one up. Override
+  lines may start with a name, which brings its overlay along (overrides_jp.txt now uses names only). gen.py
+  rejects duplicate names, non-C names and names in the runtime's namespaces (F_/Onn_/L_, hle_, hook_, rt_, cpu_,
+  gte_, mem_, bios_, g_, ...), and warns about (and skips) a name on an address that isn't a function start. 60
+  names so far: everything the notes, hooks and overrides mentioned (45 main exe, 7 COMOD0.MEN, 4 COMOD11.SNG, 4
+  COMOD8.SNG); PsyQ functions keep their library names (StSetStream, SpuSetTransferStartAddr, v_wait, ...). These
+  notes and the runtime comments use the names; addresses that are only on the USA disc stay as addresses (no
+  symbols_us.txt yet). The smoke build runs gen.py without a map. Add a line to symbols_jp.txt whenever a new
+  function gets hooked or written up.
 - **Setup wizard (done, src/frontend/discs.cpp)**: ImGui pages Welcome -> Japanese disc -> optional discs -> summary,
   shown before boot on the first start (no `setup_done` in ujl.ini), whenever the JP image can't be found, or with
   UJL_SETUP=1; also Settings > Discs > "Manage discs..." in game (changes apply on restart). Never shown under
@@ -556,18 +562,18 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
 - High-res/widescreen/ultrawide GL renderer (FMV stays 4:3 native); texture modes (vectorized HQ / original).
 - **Autoplay / Auto-COOL (done, src/runtime/autoplay.c; Settings > Game > Autoplay, not saved; UJL_AUTOPLAY=1/2,
   UJL_AUTOPLAY_LOG=1)**: player 1's presses are injected into rt_pad_state, so the game's own pad driver and judge
-  see them. Found from the controller block (F_8002d580: 0x80078a20 +4 held, +6 pressed, +8 released; raw buffer
+  see them. Found from the controller block (pad_update: 0x80078a20 +4 held, +6 pressed, +8 released; raw buffer
   0x80078a68), then the rating meter's writer back to the judge:
-  - song time 0x80078af8; slot = time / 24 (F_8001b8b0). The logic runs every second vblank: it advances the time by
-    5-7 units, then reads the pad and stamps the press with the new time (F_8001b0a4 -> F_80017bc4, tick grid
+  - song time 0x80078af8; slot = time / 24 (stage_frame). The logic runs every second vblank: it advances the time by
+    5-7 units, then reads the pad and stamps the press with the new time (player_read_input -> tick_grid_record, tick grid
     0x801a2410, 396 ticks per player, 4 units per tick). So a press is made once time + 6 is within 3 of the slot.
   - chart: 4-byte records {s16 slot, u8 id, u8 note count} sorted by slot, cursor 0x80071df0; ids 1-6 = Triangle,
     Circle, Cross, Square, L1, R1 (0x8005b848). The records are the player's expected notes at the player's own
-    timing. Answer window 0x80071ccc..0x80071cce (32767 closed), scored when it closes (F_8001c214 -> F_800187e8 ->
-    F_80018354): +3 per press of a line button within ~8 units of a slot; -count if the first press isn't the first
+    timing. Answer window 0x80071ccc..0x80071cce (32767 closed), scored when it closes (answer_window_close -> answer_window_score ->
+    phrase_score): +3 per press of a line button within ~8 units of a slot; -count if the first press isn't the first
     note; penalties for other buttons and for pressing more/fewer than the note count (1.5 each); 0 unless every
-    line button was pressed; rhythm bonus F_800182a0 (pairs of slots: odd only / both / even only / empty, a group of
-    all four pays 48, table 0x8005b770/0x8005b774). Rating F_80018a08: score >= threshold (0x80071cda, ~40) cool,
+    line button was pressed; rhythm bonus rhythm_bonus (pairs of slots: odd only / both / even only / empty, a group of
+    all four pays 48, table 0x8005b770/0x8005b774). Rating phrase_rate: score >= threshold (0x80071cda, ~40) cool,
     > 0 good, else bad; meter 0x80071dc0.
   - Autoplay presses the chart exactly: 3 per note, meter stays at 4 (GOOD; Stages 1 and 3 checked). Auto-COOL adds
     presses chosen by a search over the window's slot pairs (rhythm_fill): each pair gets one of the four patterns
@@ -578,26 +584,26 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     same search freestyles with all six buttons in turn (Stage 1: 185 beat, 34 "and", 186 16th presses; the 16ths
     are the two per group the bonus needs). Stages 1, 3 and 7 reach COOL
     and stay there (scores 70-240 per line); the COOL scenes play.
-  - Attract demo: 0x80071ddc == 1 (skipped). High scores: F_8001e7a0 inserts into the top-3 table (from 0x801a5348,
+  - Attract demo: 0x80071ddc == 1 (skipped). High scores: hiscore_insert inserts into the top-3 table (from 0x801a5348,
     {name[8], u16 score}) after the name entry; hook_hiscore_insert zeroes its score argument (sp+16) for a song
     played with either on at any point, so nothing is inserted (checked: table unchanged, 3386 dropped).
   - Auto-FEVER (mode 3): Auto-COOL until COOL, then the stage's fever codes. In a COOL window the stage script's
-    opcode handler F_8001cbf0 copies a fever table pointer from the stage's list into player 1's block +92
+    opcode handler script_set_fever_table copies a fever table pointer from the stage's list into player 1's block +92
     (0x80071d14; 0 outside COOL windows). Six 32-byte records (one per fever colour; Stage 1: COMOD11.SNG file
     0x143ac): {u16 1, u16 100, u16 30, s16 -15, s16 -50, u8 code[8] (0xF0 | button id, 0 = rest), u8 0xFF[8], u16 0,
-    u32 next} - the rows the loading screen shows with Unlock all. F_80017784 files each on-time press under
-    floor(time / 24) in a 32-slot ring (block +57) and resets the ring on a press outside tick 1-4; F_800178b0
+    u32 next} - the rows the loading screen shows with Unlock all. fever_ring_press files each on-time press under
+    floor(time / 24) in a 32-slot ring (block +57) and resets the ring on a press outside tick 1-4; fever_check
     compares the last 8 slots with each code at every slot boundary and on a match sets fever bit k (block +55),
     a 4-phrase timer (block +90) and resets the ring. So a fever press must be stamped in [slot*24, slot*24 + 7]:
     the press goes on the logic frame whose predicted stamp is closest to the middle, slot*24 + 3.5 (aiming at + 2
     filed some presses a slot early). The time steps come in repeating pairs set by the tempo (Stage 1 7/5, Stage 6
     5/8, sometimes 7/6/7), so the next step is predicted as the one before the last ("12 - last" was 1+ units off in
-    Stage 6). F_80017784 also resets the ring when a slot that already holds a press gets another. Codes are played back to back from the window's second beat (a code on the first slot
+    Stage 6). fever_ring_press also resets the ring when a slot that already holds a press gets another. Codes are played back to back from the window's second beat (a code on the first slot
     missed), a beat of rest before a code that starts with a press (the post-match reset ate it), the fevers not yet
     running first so a miss is retried. Stage 1: all six stack in the first COOL section; in the second a code can
     miss on a jump of the song clock (CD timing, e.g. +31 units at slot 711) with no window left to retry.
   - Players and 2P: each player has its own plan, timing and fever state. Player p's block is 0x80071cb8 + 96p;
-    +48 is its input source (F_8001b0a4: 0/1 controller port, 2-4 the game's COM player, 5 nobody). Autoplay drives
+    +48 is its input source (player_read_input: 0/1 controller port, 2-4 the game's COM player, 5 nobody). Autoplay drives
     only players on a controller port, on that port; COM partners/opponents and both players of the attract demo
     (source 3) are left alone. Port 2 reports a pad while Autoplay is on (bios.c rt_pad2_present, sio.c), so 2P
     versus/co-op can be chosen. Mode 0x80078aec: 0 solo, 1 versus (a meter per player, 0x80071dc0 + 10p), 2 co-op
@@ -609,7 +615,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     presses before it, tracks the press count, and covers the whole window (pairs before the first note count as
     empty). A window is scored as its last slot starts, so nothing is planned on that slot. (The older fill pressed
     the first button one slot early on dense lines: an audible wrong note in 2P.)
-  - At COOL the scorer's "teacher" argument is the rating (F_80019320 -> F_80019528: player struct +2), and rating 0
+  - At COOL the scorer's "teacher" argument is the rating (teacher_rating -> player_rating: player struct +2), and rating 0
     takes the no-teacher path: any button counts. PaRappa mode and versus keep giving lines during COOL, so
     Auto-FEVER enters fever codes in any window where the player is COOL and has a fever table, not just empty ones.
   - Checked (probe; 2P by poking player 2's source to 1 and the active mask 0x80071db8 to 3 after load): Stage 1
@@ -622,7 +628,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     2P fever presses a slot early (notes still scored, fevers failed). Press timing now calibrates itself: after each
     press it finds the recorded stamp in the player's tick grid (0x801a2410 + 396p) and keeps a running correction
     (settles near -3 solo, -4 in 2P co-op).
-  - Fever turns: F_8001b8b0 files a press into the fever ring only while its slot is below block +14; block +12/+14
+  - Fever turns: stage_frame files a press into the fever ring only while its slot is below block +14; block +12/+14
     hold the player's fever range [start, end), 32767 outside it, set as the window opens (+8 bit 0x80 too). In 2P
     the COOL windows open for both players but alternate as fever turns (Stage 6: player 1 368, 432, 496; player 2
     400, 464), so codes entered in the other player's window were lost; Auto-FEVER enters codes only inside the
@@ -632,7 +638,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     match ends at slot 527 (was 2 and 0); Stage 6 and Stage 3 co-op both players all six; Stage 1 solo and PaRappa
     Stage 3 solo all six; Stage 1 Autoplay GOOD.
   - After an autoplayed song the system-save and replay-save screens are skipped (hook_menu_screen, pre-hook on the
-    menu overlay's screen dispatcher O00_801c99c4: the screen loop O00_801c5f44 calls it with the screen number and
+    menu overlay's screen dispatcher menu_screen_dispatch: the screen loop menu_screen_loop calls it with the screen number and
     it returns the next). Screens: 10 name entry, 30 a step after it, 27 SYSTEM SAVE, 28 REPLAY SAVE, 31/29 replay,
     3 candy-bar main menu, 12/4 Stage Select, 35 stage start. 27/28/29/31 become 3 while armed (armed when the song
     ends, disarmed at the main menu, so Load & Save from the candy bars still works). Name entry still shows (the
@@ -659,7 +665,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     sample banks (S5RR_R/S6RR_R .VB/.VH), Lammy's Stage 6 camo outfit (LA06/09/10/11 + LA12, LA.TMD, *.DAT),
     Stage 1 animations (*_TI.TOD, ON_TO2.TOD). The USA-only face textures (F_LA*.TIM) don't fit and are left out.
   - Stage 6 movie: S6.IKI re-encoded on the USA disc (1964 frames vs 2043, every frame different). The game calls
-    StSetStream (F_80030694) with end frame -1; the movie loop (F_8001688c/F_800169ac) ends after frame
+    StSetStream with end frame -1; the movie loop (movie_loop/movie_next_frame) ends after frame
     `directory size / 20480 - 5` (JP 2043, USA 1964), so the USA stream is served from the JP file's start, its
     end-of-file sector repeats past its end, and the /S6 directory record reports the USA size. Not yet watched in
     game (the probe's menu timing kept landing in the attract loop instead of Stage 6 story).
@@ -727,16 +733,16 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   frontend holds the last picture and mutes audio while rt_load_turbo_active(). Stage Select -> Stage 1, real time:
   9.36 s -> 2.77 s, which is now almost all the stage title card (kept: it has a voice line). Loading screen anatomy
   (Stage 1): title card sprites (S1.IKI ReadS for its voice), then the purple loading screen drawn by the 2D
-  sprite-script thread F_80021940 while the loader reads CMP11SNG.INT/S1 files with ~10 frames between files.
+  sprite-script thread sprite_script_thread while the loader reads CMP11SNG.INT/S1 files with ~10 frames between files.
 - **Green screen after a fast-forwarded load (fixed)**: the turbo outran the UI thread, the recorder dropped its
   backlog and resynced the GPU from g_vram, which has no drawn pixels since the software raster skip, so the
   frame buffers showed stale data. gpu_rec_vblank now waits (up to 250 ms) for the UI thread instead of dropping
   while the software raster is off.
 - **Stage 1 crowd "snapping back" ~once a second: SOLVED (patch.c credits swap)**. Chain: the crowd (clut 16155) plays
-  32-frame morph clips (F_80023b0c -> F_80023340 -> F_8003d944, GPF-weighted pose deltas); the clip restarts on stage
-  choreography cues (O02_801cb550 <- per-frame event buffer 0x80078330 filled by the timeline thread O02_801c6c94 ->
-  F_8002b7d4, time from O02_801cd4c4 -> 0x80078af8 <- F_8001a954 <- raw clock 0x801a2360). That raw clock is written
-  by the CD callback F_80014c54 from GetlocL's result: the MSF in the header of the last sector read, minus the
+  32-frame morph clips (anim_update -> morph_clip_apply -> morph_blend, GPF-weighted pose deltas); the clip restarts on stage
+  choreography cues (stage1_cue_dispatch <- per-frame event buffer 0x80078330 filled by the timeline thread stage1_timeline_thread ->
+  timeline_events_fill, time from stage1_song_time -> 0x80078af8 <- song_clock_update <- raw clock 0x801a2360). That raw clock is written
+  by the CD callback cd_getloc_callback from GetlocL's result: the MSF in the header of the last sector read, minus the
   song's start. The credits-song swap copied whole USA sectors, header included, and the USA ST1.XA sits 34 sectors
   earlier, so every 8th sector the clock jumped back ~33 sectors (-33/+35 per vblank). The timeline clamps it to
   max(previous), so cues fired late/early by a frame or two and clips were cut at t=29/30 (pop). Fix: copy only

@@ -22,7 +22,7 @@ typedef struct CPU {
 } CPU;
 
 typedef void (*RecompFn)(CPU *c);
-typedef struct { uint32_t addr; RecompFn fn; } RecompFunc;
+typedef struct { uint32_t addr; RecompFn fn; const char *name; } RecompFunc; /* name: symbol map, or NULL */
 extern const RecompFunc recomp_table[];
 extern const int recomp_table_size;
 
@@ -197,6 +197,9 @@ static inline ShadowGuard shadow_push(uint32_t a) { if (g_shadow_n < SHADOW_MAX)
 static inline void shadow_pop(ShadowGuard *g) { g_shadow_n = *g; }
 #define TRACE_FN(a) ShadowGuard _sg __attribute__((cleanup(shadow_pop))) = shadow_push(a)
 void rt_dump_stack(const char *why);
+/* function name for a guest address: the symbol map's ("hiscore_insert"), else F_8001e7a0 / O00_801c5f44 (the
+   overlay loaded now), else "?8001e7a0"; unnamed ones are formatted into buf */
+const char *rt_func_name(uint32_t addr, char *buf, size_t n);
 
 #ifdef __cplusplus
 }

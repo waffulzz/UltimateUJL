@@ -1,22 +1,64 @@
 """MIPS -> C static recompiler.
 
-python -I tools/recomp/gen.py <exe> <outdir> [--per-file N]
+python -I tools/recomp/gen.py <exe> <outdir> [--per-file N] [--seeds F] [--overlays DIR HEXBASE]
+                                               [--overrides F] [--symbols F]
 
 Emits:
   outdir/recomp_funcs.h     prototypes
   outdir/recomp_NNN.c       function bodies
   outdir/recomp_dispatch.c  address -> function table
+
+--symbols names functions (symbols_jp.txt): "addr name" for the main exe, "addr@OVERLAY.NAME name" for an
+overlay function. A named function is emitted as `void name(CPU *c)` instead of F_xxxxxxxx / Onn_xxxxxxxx (the
+old name stays as a #define alias, the dispatch table keeps the address), and override lines may then start with
+the name instead of the address.
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from analyze import Analyzer  # noqa: E402
 from mips import Exe, REG  # noqa: E402
 
+MAIN_NAMES = {}  # main-exe function start -> symbol name (--symbols)
+
 
 def fn(a):
-    return f"F_{a:08x}"
+    return MAIN_NAMES.get(a) or f"F_{a:08x}"
+
+
+# runtime/generated-code namespaces a symbol name must stay out of
+RESERVED = re.compile(r"^(F_[0-9a-fA-F]{8}|O\d\d_[0-9a-fA-F]{8}|L_[0-9a-fA-F]{8}|R\d+|HI|LO|"
+                      r"(hle|hook|rt|cpu|gte|mem|mmio|bios|call|recomp|shadow|g)_.*)$")
+
+
+def load_symbols(path):
+    """-> (main {addr: name}, overlays {OVNAME: {addr: name}}, by_name {name: (addr, OVNAME or None)})"""
+    main, ovl, by_name = {}, {}, {}
+    for ln, line in enumerate(open(path), 1):
+        parts = line.split("#")[0].split()
+        if not parts:
+            continue
+        where = f"{path}:{ln}"
+        if len(parts) != 2:
+            sys.exit(f"{where}: expected 'addr[@OVERLAY] name'")
+        key, name = parts
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or RESERVED.match(name):
+            sys.exit(f"{where}: '{name}' is not a usable C name (or uses a reserved prefix)")
+        if name in by_name:
+            sys.exit(f"{where}: '{name}' is already defined")
+        ovname = None
+        if "@" in key:
+            key, ovname = key.split("@", 1)
+            ovname = ovname.upper()
+        addr = int(key, 16)
+        table = ovl.setdefault(ovname, {}) if ovname else main
+        if addr in table:
+            sys.exit(f"{where}: {key} already has the name {table[addr]}")
+        table[addr] = name
+        by_name[name] = (addr, ovname)
+    return main, ovl, by_name
 
 
 def R(n):
@@ -24,16 +66,20 @@ def R(n):
 
 
 class Gen:
-    def __init__(self, exe, funcs, prefix="F_", external=None):
+    def __init__(self, exe, funcs, prefix="F_", external=None, names=None):
         self.exe = exe
         self.funcs = funcs
         self.starts = set(funcs)
         self.prefix = prefix
         self.external = external or set()   # main-exe function starts callable from an overlay
+        self.names = names or {}            # function start -> symbol name
         self.warn = []
 
-    def name(self, a):
+    def raw_name(self, a):
         return f"{self.prefix}{a:08x}"
+
+    def name(self, a):
+        return self.names.get(a) or self.raw_name(a)
 
     # ---- single non-control instruction ----
     def op(self, ins):
@@ -184,11 +230,14 @@ class Gen:
         if ov and ov[0].startswith("hook_"):  # call a runtime hook first, then the original body
             hook = ov[0] + "(c, 0x%08xu%s)" % (f.start, "".join(f", 0x{int(a, 16):08x}u" for a in ov[1:]))
             ov = None
+        head = f"void {self.name(f.start)}(CPU *c) {{"
+        if f.start in self.names:
+            head = f"/* {self.raw_name(f.start)} */\n" + head
         if ov:  # replaced by a native (HLE) implementation in the runtime
             fn_name, args = ov[0], "".join(f", 0x{int(a, 16):08x}u" for a in ov[1:])
-            return (f"void {self.name(f.start)}(CPU *c) {{\n  TRACE_FN(0x{f.start:08x}u);\n"
+            return (f"{head}\n  TRACE_FN(0x{f.start:08x}u);\n"
                     f"  {fn_name}(c{args});\n}}")
-        out = [f"void {self.name(f.start)}(CPU *c) {{", f"  TRACE_FN(0x{f.start:08x}u);"]
+        out = [head, f"  TRACE_FN(0x{f.start:08x}u);"]
         if hook:
             out.append(f"  {hook};")
         addrs = sorted(f.addrs)
@@ -342,25 +391,56 @@ def main():
                         an.extra_seeds.add(t)
 
     funcs = an.run()
-    g = Gen(exe, funcs)
+
+    sym_main, sym_ovl, sym_by_name = {}, {}, {}
+    if "--symbols" in sys.argv:
+        sym_main, sym_ovl, sym_by_name = load_symbols(sys.argv[sys.argv.index("--symbols") + 1])
+    ov_files = {os.path.basename(name).upper(): (img, ofuncs) for _, name, img, ofuncs in overlays}
+    for ovname in sym_ovl:
+        if ovname not in ov_files:
+            sys.exit(f"symbols: no overlay named {ovname}")
+    # a name on an address that isn't a function start is a typo or a moved function: say so, don't emit it
+    for a in [a for a in sym_main if a not in funcs]:
+        print(f"warn: symbol {sym_main.pop(a)}: {a:08x} is not a function start in the main exe")
+    for ovname, names in sym_ovl.items():
+        ofuncs = ov_files[ovname][1]
+        for a in [a for a in names if a not in ofuncs]:
+            print(f"warn: symbol {names.pop(a)}: {a:08x} is not a function start in {ovname}")
+    MAIN_NAMES.update(sym_main)
+
+    g = Gen(exe, funcs, names=sym_main)
     g.overrides = {}
     ov_overrides = {}  # "addr@OVERLAY.NAME hook ..." applies to that overlay only
     if "--overrides" in sys.argv:
-        for line in open(sys.argv[sys.argv.index("--overrides") + 1]):
+        path = sys.argv[sys.argv.index("--overrides") + 1]
+        for ln, line in enumerate(open(path), 1):
             parts = line.split("#")[0].split()
-            if len(parts) >= 2:
-                if "@" in parts[0]:
-                    addr, ovname = parts[0].split("@", 1)
-                    ov_overrides.setdefault(ovname.upper(), {})[int(addr, 16)] = parts[1:]
-                else:
-                    g.overrides[int(parts[0], 16)] = parts[1:]
+            if len(parts) < 2:
+                continue
+            key = parts[0]
+            if re.fullmatch(r"[0-9a-fA-F]{8}(@\S+)?", key):
+                addr, _, ovname = key.partition("@")
+                addr, ovname = int(addr, 16), ovname.upper() or None
+            elif key in sym_by_name:  # a symbol name: its overlay comes with it
+                addr, ovname = sym_by_name[key]
+            else:
+                sys.exit(f"{path}:{ln}: '{key}' is neither an address nor a name in the symbol map")
+            if ovname:
+                ov_overrides.setdefault(ovname, {})[addr] = parts[1:]
+            else:
+                g.overrides[addr] = parts[1:]
     starts = sorted(funcs)
     main_starts = set(starts)
+
+    def table_entry(a, cname, named):
+        return f"  {{0x{a:08x}u, {cname}, {chr(34) + cname + chr(34) if named else '0'}}},\n"
 
     with open(os.path.join(outdir, "recomp_funcs.h"), "w") as o:
         o.write("/* generated */\n#pragma once\n#include \"recomp.h\"\n")
         for s in starts:
             o.write(f"void {fn(s)}(CPU *c);\n")
+        for s in sorted(sym_main):  # the address names still work
+            o.write(f"#define F_{s:08x} {sym_main[s]}\n")
         o.write(f"#define RECOMP_ENTRY {fn(exe.pc)}\n")
         o.write(f"#define RECOMP_ENTRY_ADDR 0x{exe.pc:08x}u\n")
         o.write(f"#define RECOMP_NUM_FUNCS {len(starts)}\n")
@@ -370,10 +450,10 @@ def main():
         o.write(HEADER)
         o.write("const RecompFunc recomp_table[] = {\n")
         for s in starts:
-            o.write(f"  {{0x{s:08x}u, {fn(s)}}},\n")
+            o.write(table_entry(s, fn(s), s in sym_main))
         o.write("};\nconst int recomp_table_size = sizeof(recomp_table)/sizeof(recomp_table[0]);\n")
     files.append("recomp_dispatch.c")
-    print(f"main: {len(starts)} functions")
+    print(f"main: {len(starts)} functions, {len(sym_main)} named")
 
     # overlay code + registry
     sigs = {}
@@ -383,10 +463,14 @@ def main():
         oh.write("/* generated */\n#pragma once\n#include \"recomp.h\"\n")
         for k, name, img, ofuncs in overlays:
             pre = f"O{k:02d}_"
-            og = Gen(img, ofuncs, prefix=pre, external=main_starts)
-            og.overrides = ov_overrides.get(os.path.basename(name).upper(), {})
+            ovkey = os.path.basename(name).upper()
+            onames = sym_ovl.get(ovkey, {})
+            og = Gen(img, ofuncs, prefix=pre, external=main_starts, names=onames)
+            og.overrides = ov_overrides.get(ovkey, {})
             for s in sorted(ofuncs):
-                oh.write(f"void {pre}{s:08x}(CPU *c);\n")
+                oh.write(f"void {og.name(s)}(CPU *c);\n")
+            for s in sorted(onames):
+                oh.write(f"#define {pre}{s:08x} {onames[s]}\n")
             files += write_bodies(og, ofuncs, outdir, f"ov_{k:02d}", per,
                                   HEADER + "#include \"recomp_overlays.h\"\n")
             # signature: 32 code bytes at the first function start no other overlay shares
@@ -401,12 +485,13 @@ def main():
             assert sig, f"no unique signature for {name}"
             reg.append(f"static const RecompFunc ov{k:02d}_table[] = {{\n")
             for s in sorted(ofuncs):
-                reg.append(f"  {{0x{s:08x}u, {pre}{s:08x}}},\n")
+                reg.append(table_entry(s, og.name(s), s in onames))
             reg.append("};\n")
             sb = ", ".join(f"0x{x:02x}" for x in sig[1])
             entries.append(f"  {{\"{name}\", 0x{img.base:08x}u, 0x{len(img.data):x}u, 0x{sig[0]:x}u, {{{sb}}}, "
                            f"ov{k:02d}_table, {len(ofuncs)}}},\n")
-            print(f"overlay {k:02d} {name}: {len(ofuncs)} functions, sig @+0x{sig[0]:x}")
+            print(f"overlay {k:02d} {name}: {len(ofuncs)} functions{f', {len(onames)} named' if onames else ''}, "
+                  f"sig @+0x{sig[0]:x}")
             for w in og.warn[:5]:
                 print("  warn:", w)
     reg.append("const RecompOverlay recomp_overlays[] = {\n")

@@ -58,12 +58,12 @@ cmake -S . -B build/ios-sim -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT
 cmake --build build/ios-sim
 ```
 
-After editing `tools/recomp/gen.py` or `tools/recomp/overrides_*.txt`, regenerate. This is the generator step of
+After editing `tools/recomp/gen.py`, `overrides_*.txt` or `symbols_jp.txt`, regenerate. This is the generator step of
 `prepare.sh`:
 
 ```bash
 python -I tools/recomp/gen.py build/exe/SCPS_180.11 build/gen_jp --seeds tools/recomp/seeds_jp.txt \
-  --overlays build/exe/ov 801c5110 --overrides tools/recomp/overrides_jp.txt
+  --overlays build/exe/ov 801c5110 --overrides tools/recomp/overrides_jp.txt --symbols tools/recomp/symbols_jp.txt
 ```
 
 Targets: `ujl` (the game: SDL3, OpenGL, ImGui), `ujl_probe` (headless test harness), `ujl_probe_us` (USA build, analysis
@@ -126,10 +126,13 @@ There's no unit test suite. Verification means running the game headless or scri
 - `gen.py` emits one C function per MIPS function (`F_xxxxxxxx` for the main exe, `Onn_xxxxxxxx` per overlay). Guest
   registers live in `CPU`, branches become `goto`, indirect calls go through `call_indirect`, and backward branches hit
   `SAFEPOINT`, where time advances and interrupts are delivered.
+- `symbols_jp.txt` names functions (`addr name`, `addr@COMOD0.MEN name`): gen.py emits `void name(CPU *c)` instead,
+  keeps the F_/Onn_ name as a #define, and stack dumps print the name. Name every function you hook or write up there,
+  and use the names in notes and comments.
 - The 42 `COMOD*` overlays all load at `0x801c5110`. The runtime picks the active one by a code signature
   (`rt_current_overlay_name()`).
-- `overrides_jp.txt` replaces a function with a native one (`addr func`) or runs a pre-hook first (`addr hook_x`).
-  `addr@COMOD0.MEN hook_x` scopes it to one overlay.
+- `overrides_jp.txt` replaces a function with a native one (`name func`) or runs a pre-hook first (`name hook_x`).
+  The name comes from `symbols_jp.txt` (with its overlay); a bare `addr` or `addr@COMOD0.MEN` works too.
 - SWC2 of SXY registers becomes `gte_store_sxy` (see GTE below).
 
 **Runtime (`src/runtime/`)**, a register-level PS1:

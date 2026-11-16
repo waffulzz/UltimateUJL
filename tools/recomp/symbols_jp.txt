@@ -1,0 +1,91 @@
+# Function names for SCPS_180.11 (JP) and its overlays, read by gen.py --symbols.
+#   addr name                    main exe function at addr
+#   addr@OVERLAY.NAME name       function in one overlay (all load at 0x801c5110)
+# A named function is emitted as `void name(CPU *c)`; its F_xxxxxxxx / Onn_xxxxxxxx name stays as a #define, the
+# dispatch table keeps the address, and stack dumps print the name. overrides_jp.txt lines may use the name.
+# Names are the port's own descriptions unless they are a PsyQ library function's name. Overlay numbers:
+# O00 COMOD0.MEN (menus), O02 COMOD11.SNG (Stage 1 story), O41 COMOD8.SNG (staff roll); docs/ARCHITECTURE.md.
+
+# ---- boot, settings, scenes
+8001e498  settings_init               # clears the settings block 0x801a5310, language = 5 (Japanese)
+8001e42c  settings_init_records       # called right after the language store (hook_default_language)
+80013e8c  scene_loader                # stage/sub (0x80078ae0/e4) -> scene + column -> overlay entry
+800190d8  scene_for_stage             # stage+10 for sub 0/1/5, else stage
+800190fc  scene_column_for_stage      # 0 = SNG for sub 0/3/4, 1 = CMP/COP
+80016720  stage_entry_set             # stores the current stage-table entry at 0x801a23ec
+
+# ---- song clock, timeline, stage frame
+80014c54  cd_getloc_callback          # GetlocL result -> raw song clock 0x801a2360
+8001a954  song_clock_update           # raw clock -> song time 0x80078af8
+80019244  song_time_get               # returns 0x80078af8
+8002b7d4  timeline_events_fill        # per-frame event buffer 0x80078330
+8001b8b0  stage_frame                 # per logic frame: song time step, slot = time / 24, fever ring filing
+8002d580  pad_update                  # controller block 0x80078a20 (+4 held, +6 pressed, +8 released)
+8001b0a4  player_read_input           # player block +48 input source: port 0/1, 2-4 COM, 5 nobody
+80017bc4  tick_grid_record            # stamps a press into the tick grid 0x801a2410 + 396p
+
+# ---- scoring and rating
+8001c214  answer_window_close         # window 0x80071ccc..ce closes -> scored
+800187e8  answer_window_score
+80018354  phrase_score                # +3 per line-button press near a slot, penalties
+800182a0  rhythm_bonus                # slot pairs odd/both/even/empty, 48 per complete group
+80018a08  phrase_rate                 # score >= threshold (0x80071cda) cool, > 0 good, else bad
+80019254  player_meter                # meter struct 0x80071dbc (+10p in versus)
+80019528  player_rating               # player_meter(p) +2
+80019320  teacher_rating              # the scorer's "teacher" argument (rating; 0 = no-teacher path)
+80019580  rating_from_meter           # meter -> rating via table 0x80010b0c (hook_force_rating)
+8001e7a0  hiscore_insert              # (stage, ?, ?, name, score) into the stage's top-3 table
+
+# ---- fever (COOL)
+8001cbf0  script_set_fever_table      # stage-script opcode: fever table pointer -> player block +92
+80017784  fever_ring_press            # files an on-time press in the 32-slot ring (block +57)
+800178b0  fever_check                 # last 8 ring slots vs each fever code at a slot boundary
+
+# ---- movies
+80030694  StSetStream
+8001688c  movie_loop
+800169ac  movie_next_frame
+
+# ---- 2D sprites, models, animation
+80021940  sprite_script_thread        # 2D sprite-script thread (loading screen)
+80023b0c  anim_update                 # (anim, time, obj, idx)
+80023340  morph_clip_apply            # 32-frame morph clips
+8003d944  morph_blend                 # (dest verts, delta verts, count), GPF-weighted pose deltas
+
+# ---- captions (JP renderer, unused for text: the JP game draws a pre-rendered sheet)
+800261f8  caption_draw                # = USA 800260b0
+80025e74  caption_draw_glyphs         # = USA 80025d2c (text, clut)
+8002623c  caption_render_vram         # = USA 800260f4, renders text into VRAM (768,256)
+
+# ---- sound engine
+8004cca4  sound_engine_tick
+80051784  sound_flush_key_masks       # pending key-off / key-on masks
+800543bc  sound_thread_main
+8005430c  sound_thread_schedule       # writes PCB->current TCB (*(0x108)) directly
+8004e554  SpuSetTransferStartAddr
+
+# ---- libetc
+8003562c  v_wait                      # VSync's wait (count, timeout), replaced by hle_vsync_wait
+800356c4  ChangeClearPad              # B0:5B
+800356d4  ChangeClearRCnt             # C0:0A
+
+# ---- COMOD0.MEN (menus)
+801c5f44@COMOD0.MEN  menu_screen_loop
+801c99c4@COMOD0.MEN  menu_screen_dispatch      # (screen) -> next screen, handler table 0x801db0f0
+801cbc4c@COMOD0.MEN  menu_sprite_submit        # sprite: +8 x, +10 y, +12 u, +13 v, +14 clut, +16 w, +18 h
+801cc188@COMOD0.MEN  menu_card_message_draw    # (msg) memory card message as one sprite
+801cd2a0@COMOD0.MEN  stage_select_tooltip_build
+801cad58@COMOD0.MEN  caption_scene_setup       # picks caption directory entry 0 (file 0x17b64)
+801cae58@COMOD0.MEN  caption_timeline_load     # from the pointer variable 0x801db348
+
+# ---- COMOD11.SNG (Stage 1 story)
+801c66e0@COMOD11.SNG  stage1_pad_pressed
+801c6c94@COMOD11.SNG  stage1_timeline_thread
+801cb550@COMOD11.SNG  stage1_cue_dispatch      # choreography cues from the event buffer (restarts morph clips)
+801cd4c4@COMOD11.SNG  stage1_song_time
+
+# ---- COMOD8.SNG (staff roll)
+801c55e4@COMOD8.SNG  credits_entry
+801c5370@COMOD8.SNG  credits_main_loop         # fades out over 90 frames once 0x801c6368 is set
+801c5168@COMOD8.SNG  credits_timeline_thread
+801c624c@COMOD8.SNG  credits_timeline_step     # called every frame right after the end-flag check

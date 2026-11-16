@@ -5,7 +5,7 @@
    into RAM, processes it (the guitar effects and the "mute when the player misses" logic), and DMAs
    256 bytes back into a ring at 0x7FE00 that another voice plays.
 
-   libspu's SpuSetTransferStartAddr (F_8004e554 in SCPS_180.11) refuses addresses below 0x1010, which is
+   libspu's SpuSetTransferStartAddr (8004e554 in SCPS_180.11) refuses addresses below 0x1010, which is
    where the capture buffers live. At init the stream code checks that the instruction at 0x8004e56c is
    the range check's `bnez v0` (0x1440000b) and overwrites it with a nop. Recompiled code doesn't see
    that patch, so the read went to the previous address (the 0x7FE00 ring) and the guitar was silent.

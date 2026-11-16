@@ -12,7 +12,9 @@ extern int g_in_exception;
 void rt_dump_stack(const char *why) {
     rt_log("--- guest stack (%s): pc~%08x ra=%08x sp=%08x gp=%08x depth=%d sr=%08x inexc=%d istat=%03x imask=%03x", why, g_cpu->pc, g_cpu->r[31], g_cpu->r[29], g_cpu->r[28], g_shadow_n, g_cpu->cop0[12], g_in_exception, g_istat, g_imask);
     int n = g_shadow_n < SHADOW_MAX ? g_shadow_n : SHADOW_MAX;
-    for (int i = n - 1; i >= 0 && i >= n - 24; i--) rt_log("   #%d F_%08x", n - 1 - i, g_shadow[i]);
+    char buf[32];
+    for (int i = n - 1; i >= 0 && i >= n - 24; i--)
+        rt_log("   #%d %08x %s", n - 1 - i, g_shadow[i], rt_func_name(g_shadow[i], buf, sizeof buf));
 }
 
 /* ------------------------------------------------------------ COP0 */
@@ -66,16 +68,21 @@ void cpu_invalid(CPU *c, uint32_t pc, uint32_t word) {
 }
 
 /* ------------------------------------------------------------ dispatch */
-static RecompFn find_in(const RecompFunc *t, int n, uint32_t addr) {
+static const RecompFunc *entry_in(const RecompFunc *t, int n, uint32_t addr) {
     int lo = 0, hi = n - 1;
     while (lo <= hi) {
         int mid = (lo + hi) >> 1;
         uint32_t a = t[mid].addr;
-        if (a == addr) return t[mid].fn;
+        if (a == addr) return &t[mid];
         if (a < addr) lo = mid + 1;
         else hi = mid - 1;
     }
     return NULL;
+}
+
+static RecompFn find_in(const RecompFunc *t, int n, uint32_t addr) {
+    const RecompFunc *e = entry_in(t, n, addr);
+    return e ? e->fn : NULL;
 }
 
 static int cur_overlay = -1;
@@ -120,6 +127,23 @@ static RecompFn find_fn(uint32_t addr) {
     if (f) return f;
     const RecompOverlay *o = overlay_for(addr);
     return o ? find_in(o->table, o->ntable, addr) : NULL;
+}
+
+const char *rt_func_name(uint32_t addr, char *buf, size_t n) {
+    const RecompFunc *e = entry_in(recomp_table, recomp_table_size, addr);
+    if (e) {
+        if (e->name) return e->name;
+        snprintf(buf, n, "F_%08x", addr);
+        return buf;
+    }
+    const RecompOverlay *o = overlay_for(addr);
+    if (o && (e = entry_in(o->table, o->ntable, addr))) {
+        if (e->name) return e->name;
+        snprintf(buf, n, "O%02d_%08x", (int)(o - recomp_overlays), addr);
+        return buf;
+    }
+    snprintf(buf, n, "?%08x", addr);
+    return buf;
 }
 
 void call_indirect(CPU *c, uint32_t addr) {

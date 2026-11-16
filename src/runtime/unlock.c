@@ -25,7 +25,7 @@ void unlock_tick(void) {
 }
 
 /* Debug: UJL_FORCE_RATING=0..3 pins the rating (0 = COOL) by feeding the meter-to-rating lookup
-   (F_80019580, table at 0x80010b0c: meter 0-2 COOL, 3-6 GOOD, 7-10 BAD, 11+ AWFUL) a fixed meter.
+   (rating_from_meter, table at 0x80010b0c: meter 0-2 COOL, 3-6 GOOD, 7-10 BAD, 11+ AWFUL) a fixed meter.
    Used to reach fever mode headless. */
 #include <stdlib.h>
 #include <stdio.h>
@@ -39,8 +39,8 @@ void hook_force_rating(CPU *c, uint32_t fn) {
 }
 
 /* Debug: UJL_FORCE_SCENE=stage[,sub] rewrites the stage/sub pair (0x80078ae0/e4) once, when the scene loader
-   F_80013e8c is about to start Stage 1 story (1,0). It maps them to the scene (F_800190d8: stage+10 for sub 0/1/5,
-   else stage) and the SNG/CMP/COP column (F_800190fc: 0 for sub 0/3/4). UJL_FORCE_SCENE=8,3 = staff roll. */
+   scene_loader is about to start Stage 1 story (1,0). It maps them to the scene (scene_for_stage: stage+10 for sub 0/1/5,
+   else stage) and the SNG/CMP/COP column (scene_column_for_stage: 0 for sub 0/3/4). UJL_FORCE_SCENE=8,3 = staff roll. */
 void hook_force_scene(CPU *c, uint32_t fn) {
     (void)c; (void)fn;
     static int stage = -2, sub;
@@ -52,7 +52,7 @@ void hook_force_scene(CPU *c, uint32_t fn) {
     stage = -1;
 }
 
-/* PROBE_MORPH=hexdest (debug): log the morph blend calls (F_8003d944: a0 dest verts, a1 delta verts, a2 count,
+/* PROBE_MORPH=hexdest (debug): log the morph blend calls (morph_blend: a0 dest verts, a1 delta verts, a2 count,
    a3 weight) that write the given destination array, one line each, with the GPU frame. */
 void hook_morph_log(CPU *c, uint32_t fn) {
     (void)fn;
@@ -65,7 +65,7 @@ void hook_morph_log(CPU *c, uint32_t fn) {
     rt_log("morph: f %u dst %08x src %08x n %u w %d", g_gpu_frame, c->r[4], c->r[5], c->r[6], (int32_t)c->r[7]);
 }
 
-/* PROBE_ANIM=f0,f1 (debug): log F_80023b0c(anim, time, obj, idx) calls between GPU frames f0..f1. */
+/* PROBE_ANIM=f0,f1 (debug): log anim_update(anim, time, obj, idx) calls between GPU frames f0..f1. */
 void hook_anim_log(CPU *c, uint32_t fn) {
     (void)fn;
     static int st = -1; static unsigned f0, f1;

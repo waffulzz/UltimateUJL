@@ -18,4 +18,4 @@ for f in $("$PY" -I tools/psxdisc.py ls "$DISC" | awk '{print $NF}' | grep '/COM
 done
 "$PY" -I tools/recomp/gen.py build/exe/SCPS_180.11 build/gen_jp --seeds tools/recomp/seeds_jp.txt \
   --overlays build/exe/ov 801c5110 \
-  --overrides tools/recomp/overrides_jp.txt
+  --overrides tools/recomp/overrides_jp.txt --symbols tools/recomp/symbols_jp.txt
