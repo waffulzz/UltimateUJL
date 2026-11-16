@@ -20,7 +20,9 @@ void hw_set_smooth(int on);           // 1: smooth "vector" texture filtering
 // Replays recorded commands. Returns true if a frame marker was seen; *disp gets the last one.
 bool hw_replay(const uint8_t *data, size_t len, GpuDisplay *disp);
 unsigned hw_vram_texture();
-double hw_take_replay_ms(int *replays);  // CPU time spent in hw_replay since the last call, and how many replays
+double hw_take_replay_ms(int *replays);
+void hw_take_counts(char *buf, int len);
+void hw_set_log(int on);                   // log widescreen events ("wide:" lines) without UJL_FPS_STATS   // render-pass-breaking operations since the last call, as text  // CPU time spent in hw_replay since the last call, and how many replays
 // Widescreen: aspect 0 (or <= 4:3) = off. 3D is widened, 2D stays centered unless stretch_ui.
 void hw_set_widescreen(float aspect, bool stretch_ui);
 struct HwView { unsigned tex; float u0, v0, u1, v1; float aspect; };

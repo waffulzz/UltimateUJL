@@ -59,6 +59,10 @@ static std::atomic<bool> g_frame_new{false};
 static std::atomic<uint16_t> g_input_buttons{0xFFFF};
 static std::atomic<int> g_vblanks{0};
 static bool g_show_vram;
+// The hardware renderer draws the picture itself; the native frame (host_vblank's conversion of g_vram) is only
+// shown by the software renderer and for 24-bit movie frames. Converting it every vblank anyway cost the game
+// thread ~5% on an iPhone 16 Pro.
+static std::atomic<bool> g_need_native{true};
 
 // ---------------------------------------------------------------- dev automation (UJL_SCRIPT)
 // UJL_SCRIPT=file with lines "<seconds> <button>|shot|overlay|quit" drives the game for renderer tests: buttons are
@@ -142,6 +146,7 @@ extern "C" void host_vblank(void) {
     const GpuDisplay &d = g_gpu_display;
     int w = d.hres, h = d.vres;
     if (w <= 0 || h <= 0) return;
+    if (!g_need_native.load(std::memory_order_relaxed) && !d.depth24 && !g_show_vram) return;
     SDL_LockMutex(g_frame_mtx);
     g_frame_w = w;
     g_frame_h = h;
@@ -445,12 +450,17 @@ static void save_shot(int fbw, int fbh, const char *name) {
 // iOS (and Android) apps get suspended: no GL calls are allowed in the background (the process is killed for
 // them), and the app may be terminated there without warning, so the memory card is written out first. While
 // the frontend stops replaying, the game thread blocks in gpu_rec_vblank, which pauses the game.
+// This runs as an SDL event watch (lifecycle_watch), i.e. the moment UIKit announces the change, on the main
+// thread (the UI thread, GL context current). Seen from the event queue it came a frame late: on an iPhone 16 Pro
+// the next frame's GPU work was already refused ("Insufficient Permission (to submit GPU work from background)").
 static std::atomic<bool> g_app_background{false};
 static void app_lifecycle_event(const SDL_Event &e) {
     switch (e.type) {
     case SDL_EVENT_WILL_ENTER_BACKGROUND:
-        g_app_background = true;
-        memcard_flush();
+        if (!g_app_background.exchange(true)) {
+            glFinish();   // let submitted GPU work complete while that is still allowed
+            memcard_flush();
+        }
         break;
     case SDL_EVENT_TERMINATING:
         memcard_flush();
@@ -460,6 +470,10 @@ static void app_lifecycle_event(const SDL_Event &e) {
         break;
     default: break;
     }
+}
+static bool SDLCALL lifecycle_watch(void *, SDL_Event *e) {
+    app_lifecycle_event(*e);
+    return true;
 }
 
 // ImGui's SDL3 backend takes the pointer position only from motion events. A touch screen (iOS) can deliver a
@@ -524,7 +538,6 @@ static bool run_setup_wizard(SDL_Window *win, const DiscSetup &start) {
             imgui_process_event(e);
             if (e.type == SDL_EVENT_QUIT) r = WIZ_QUIT;
             if (e.type == SDL_EVENT_DROP_FILE) wizard_drop_file(e.drop.data);
-            app_lifecycle_event(e);
             if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F11) {
                 bool fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN;
                 SDL_SetWindowFullscreen(win, !fs);
@@ -638,6 +651,7 @@ int main(int argc, char **argv) {
     }
     SDL_GL_MakeCurrent(win, gl);
     SDL_GL_SetSwapInterval(1);
+    SDL_AddEventWatch(lifecycle_watch, nullptr);
 #if UJL_IOS
     g_window_fbo = (GLuint)SDL_GetNumberProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_UIKIT_OPENGL_FRAMEBUFFER_NUMBER, 0);
     g_window_rb = (GLuint)SDL_GetNumberProperty(SDL_GetWindowProperties(win), SDL_PROP_WINDOW_UIKIT_OPENGL_RENDERBUFFER_NUMBER, 0);
@@ -724,7 +738,9 @@ int main(int argc, char **argv) {
     if (!g_discs.arcade_cd.empty()) fprintf(stderr, "arcade cd: %s (not used yet)\n", g_discs.arcade_cd.c_str());
     if (!g_discs.arcade_roms.empty()) fprintf(stderr, "arcade roms: %s (not used yet)\n", g_discs.arcade_roms.c_str());
     {   /* memory card slot 1: a standard raw PS1 card image next to the exe (created blank if missing) */
-        const char *sc = getenv("UJL_SCRIPT");
+        std::string scp = getenv("UJL_SCRIPT") ? getenv("UJL_SCRIPT") : "";
+        if (UJL_IOS && !scp.empty() && scp[0] != '/') scp = g_base_dir + scp;   // iOS: relative to Documents
+        const char *sc = scp.empty() ? nullptr : scp.c_str();
         if (sc && script_load(sc)) {
             const char *cp = getenv("UJL_SCRIPT_CARD");
             memcard_init(0, cp ? cp : (g_base_dir + "script_card.mcd").c_str());
@@ -774,9 +790,11 @@ int main(int argc, char **argv) {
     // The Simulator rasterizes on the CPU: smoothed textures and MSAA took the menus to ~1 fps. Settings still apply.
     const char *def_textures = "0", *def_aa = "0";
 #elif UJL_IOS
-    // Phones: MSAA off by default. Every render-target switch on a tile GPU stores and reloads the whole target, and
-    // with 4x MSAA that is four times the data (render-to-texture switches targets many times a frame).
-    const char *def_textures = "1", *def_aa = "0";
+    // Phones: Original textures and no MSAA by default. On an iPhone 16 Pro (Stage 6, 2x) the Smooth filter took
+    // the GPU from ~1 ms to 20 ms a frame on average and 60 ms in busy shots: 40 fps with hitches, against a solid
+    // 60 with Original. MSAA: every render-target switch on a tile GPU stores and reloads the whole target, and with
+    // 4x MSAA that is four times the data.
+    const char *def_textures = "0", *def_aa = "0";
 #else
     const char *def_textures = "1", *def_aa = "2";
 #endif
@@ -823,7 +841,30 @@ int main(int argc, char **argv) {
     int ui_frames = 0;
 
     bool running = true;
+    // Hitch breakdown (performance details or UJL_FPS_STATS): where a UI frame longer than 40 ms spent its time.
+    // UJL_GPU_SYNC=1 also waits for the GPU (glFinish) after the replay and after the UI draw, so "gpu-replay" and
+    // "gpu-ui" are GPU time (a stand-in where Instruments' GPU trace isn't available; it costs throughput).
+    enum { T_EVENTS, T_REPLAY, T_GPU_REPLAY, T_UPLOAD, T_IMGUI, T_RENDER, T_GPU_UI, T_SWAP, T_PACE, T_N };
+    static const char *k_tnames[T_N] = {"events", "replay", "gpu-replay", "upload", "imgui", "render", "gpu-ui", "swap", "pace"};
+    static const bool gpu_sync = getenv("UJL_GPU_SYNC") != nullptr;
+    double gpu_ms_sum[2] = {0, 0};   // per second: GPU time of replays / of the UI draw (UJL_GPU_SYNC)
+    int gpu_frames = 0;
+    uint64_t tstage[T_N] = {}, tmark = SDL_GetTicksNS(), tframe0 = tmark;
+    auto stage = [&](int i) { uint64_t t = SDL_GetTicksNS(); tstage[i] += t - tmark; tmark = t; };
+    static const bool fps_stats_env = getenv("UJL_FPS_STATS") != nullptr;
     while (running) {
+        {   // report the previous frame if it was a hitch
+            uint64_t t = SDL_GetTicksNS(), total = t - tframe0;
+            if (total > 40000000ull && (g_set.perf || fps_stats_env)) {
+                char buf[256];
+                int n = SDL_snprintf(buf, sizeof buf, "hitch: %.1f ms:", total / 1e6);
+                for (int i = 0; i < T_N; i++)
+                    if (tstage[i] >= 1000000) n += SDL_snprintf(buf + n, sizeof buf - n, " %s %.1f", k_tnames[i], tstage[i] / 1e6);
+                fprintf(stderr, "%s (overlay %s)\n", buf, rt_current_overlay_name() ? rt_current_overlay_name() : "-");
+            }
+            for (uint64_t &x : tstage) x = 0;
+            tframe0 = tmark = t;
+        }
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             imgui_process_event(e);
@@ -833,7 +874,6 @@ int main(int argc, char **argv) {
                 e.type == SDL_EVENT_WINDOW_SHOWN || e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) win_hidden = hid_w != 0;
             if (e.type == SDL_EVENT_GAMEPAD_ADDED) open_pad(e.gdevice.which);
             if (e.type == SDL_EVENT_GAMEPAD_REMOVED) close_pad(e.gdevice.which);
-            app_lifecycle_event(e);
             touchpad_event(e);
             if (e.type == SDL_EVENT_DROP_FILE) {   // a disc image or ROM set dropped on the window: open Manage discs with it
                 if (!wizard_active()) { wizard_open(false, g_discs); g_set.show_overlay = true; }
@@ -849,6 +889,7 @@ int main(int argc, char **argv) {
             }
         }
         g_input_buttons = (uint16_t)(poll_buttons(!ImGui::GetIO().WantCaptureKeyboard) & ~touchpad_held());
+        stage(T_EVENTS);
         if (touchpad_take_menu()) {
             g_set.show_overlay = !g_set.show_overlay;
             fprintf(stderr, "touch: menu button -> settings %s\n", g_set.show_overlay ? "open" : "closed");
@@ -903,6 +944,13 @@ int main(int argc, char **argv) {
             if (n && hw_replay(cmds, n, &hw_disp)) hw_have_frame = true;
         }
         gl_check_main("replay");
+        stage(T_REPLAY);
+        if (gpu_sync) {
+            glFinish();
+            uint64_t t0 = tmark;
+            stage(T_GPU_REPLAY);
+            gpu_ms_sum[0] += (tmark - t0) / 1e6;
+        }
 
         if (g_frame_new.exchange(false)) {
             SDL_LockMutex(g_frame_mtx);
@@ -922,6 +970,7 @@ int main(int argc, char **argv) {
             SDL_UnlockMutex(g_frame_mtx);
         }
         gl_check_main("frame upload");
+        stage(T_UPLOAD);
 
         if (g_cd_fast_load && rt_load_turbo_active() && !g_script_quit) {
             // fast-forwarding through a load: keep showing the last picture (no loading screen) and stay responsive
@@ -930,6 +979,7 @@ int main(int argc, char **argv) {
         }
         uint64_t now = SDL_GetTicks();
         ui_frames++;
+        hw_set_log(g_set.perf);
         {   // longest gap between two UI frames (a hitch), for the performance details
             static uint64_t last_ns;
             uint64_t t = SDL_GetTicksNS();
@@ -948,10 +998,18 @@ int main(int argc, char **argv) {
             perf_drops = g_gpu_rec_drops - perf_drops0;
             perf_drops0 = g_gpu_rec_drops;
             static int fps_log = getenv("UJL_FPS_STATS") != nullptr;
+            char counts[160];
+            hw_take_counts(counts, sizeof counts);
+            if (gpu_sync && gpu_frames) {
+                fprintf(stderr, "gpu: replay %.2f ms  ui %.2f ms per frame (%d frames)\n", gpu_ms_sum[0] / gpu_frames,
+                        gpu_ms_sum[1] / gpu_frames, gpu_frames);
+                gpu_ms_sum[0] = gpu_ms_sum[1] = 0;
+                gpu_frames = 0;
+            }
             if (fps_log || g_set.perf)
-                fprintf(stderr, "fps: game %.1f  ui %.1f  worst frame %.1f ms  replay %.2f ms avg  drops %d  scale %d  msaa %d  overlay %s\n",
-                        emu_fps, ui_fps, perf_shown_worst, perf_replay_ms, perf_drops, hw_scale(), hw_msaa(),
-                        rt_current_overlay_name() ? rt_current_overlay_name() : "-");
+                fprintf(stderr, "fps: game %.1f  ui %.1f  worst frame %.1f ms  replay %.2f ms avg  drops %d  scale %d  msaa %d  smooth %d  overlay %s  | %s\n",
+                        emu_fps, ui_fps, perf_shown_worst, perf_replay_ms, perf_drops, hw_scale(), hw_msaa(), g_set.textures,
+                        rt_current_overlay_name() ? rt_current_overlay_name() : "-", counts);
             ui_frames = 0;
             fps_vb0 = vb;
             fps_t0 = now;
@@ -966,6 +1024,7 @@ int main(int argc, char **argv) {
         // FMV (24bpp) always comes from the native frame at 4:3.
         ImVec2 ds = ImGui::GetIO().DisplaySize;
         bool use_hw = g_set.renderer == 1 && hw_have_frame && !hw_disp.depth24;
+        g_need_native.store(!use_hw, std::memory_order_relaxed);
         HwView view{};
         if (use_hw) {
             bool wide_view = hw_view(hw_disp, &view);
@@ -1278,6 +1337,7 @@ int main(int argc, char **argv) {
         }
 
         ImGui::Render();
+        stage(T_IMGUI);
         int fbw, fbh;
         SDL_GetWindowSizeInPixels(win, &fbw, &fbh);
         bind_window_fb();
@@ -1300,6 +1360,14 @@ int main(int argc, char **argv) {
         gl_check_main("clear");
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         gl_check_main("imgui render");
+        stage(T_RENDER);
+        if (gpu_sync) {
+            glFinish();
+            uint64_t t0 = tmark;
+            stage(T_GPU_UI);
+            gpu_ms_sum[1] += (tmark - t0) / 1e6;
+            gpu_frames++;
+        }
         if (int st = g_shot_req.exchange(-1); st >= 0) {
             char fn[64];
             SDL_snprintf(fn, sizeof fn, "hw_v%05d.bmp", st);
@@ -1314,8 +1382,26 @@ int main(int argc, char **argv) {
         } else {
             uint64_t ts = SDL_GetTicks();
             gl_check_main("before swap");
+#if UJL_IOS
+            {   // frames in flight (experiment switches, see docs/ARCHITECTURE.md "iOS")
+                static const int fence_n = getenv("UJL_GL_FENCE") ? std::max(1, std::min(3, atoi(getenv("UJL_GL_FENCE")))) : 0;
+                static const bool finish = getenv("UJL_GL_FINISH") != nullptr;
+                static GLsync fences[3];
+                static int fi;
+                if (finish) glFinish();
+                else if (fence_n) {
+                    if (fences[fi]) {
+                        glClientWaitSync(fences[fi], GL_SYNC_FLUSH_COMMANDS_BIT, 200000000ull);
+                        glDeleteSync(fences[fi]);
+                    }
+                    fences[fi] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                    fi = (fi + 1) % fence_n;
+                }
+            }
+#endif
             SDL_GL_SwapWindow(win);
             gl_check_main("swap");
+            stage(T_SWAP);
             uint64_t dt = SDL_GetTicks() - ts;
             if (dt > 250)
                 fprintf(stderr, "present: swap stalled %llu ms (focused=%d)\n", (unsigned long long)dt,
@@ -1331,6 +1417,7 @@ int main(int argc, char **argv) {
                 last_present = SDL_GetTicksNS();
             }
 #endif
+            stage(T_PACE);
         }
     }
     memcard_flush(); // don't lose a save made in the last second

@@ -126,6 +126,9 @@ void gpu_rec_vblank(void) {
             SDL_Delay(1);
             SDL_LockMutex(mtx);
         }
+        uint64_t waited = SDL_GetTicks() - t0;   /* the game stood still this long: worth knowing when it lags */
+        static int nlog;
+        if (waited >= 20 && nlog < 200) { nlog++; rt_log("gpu_rec: game waited %llu ms for the renderer", (unsigned long long)waited); }
     }
     /* The UI thread fell behind. Replaying a growing backlog only makes each replay slower (and the backlog
        bigger), so drop it and restart from a full VRAM copy: a stutter, not a spiral. That copy is only right if

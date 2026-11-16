@@ -70,6 +70,10 @@ uint32_t frame_no;
 int st_wide_batches, st_replays, st_glerr;
 double st_replay_ms;
 double perf_replay_ms; int perf_replays;   // since the last hw_take_replay_ms (performance details)
+// Operations that end a render pass on Apple's OpenGL ES (it runs on Metal: a texture upload or blit needs a blit
+// encoder, a target switch a new render pass, and a tile GPU loads and stores the whole target for each pass).
+// Counted since the last hw_take_counts (performance details / UJL_FPS_STATS).
+int pc_upload, pc_fill, pc_copy, pc_sync_read, pc_sync_wide, pc_flush, pc_wide_copy;
 int st_last_drops;
 extern "C" int g_gpu_rec_drops;
 int st_flush, st_sync_read, st_sync_wide, st_alloc_wide, st_upload; // per-second stats
@@ -229,15 +233,22 @@ void main() {
                 tc = rgb15(t);
             } else {
             uint c[16];
+            ivec3 rgb[16];   // each texel's color decoded once (same_color unpacked both texels on every comparison)
             for (int j = 0; j < 4; j++)
-                for (int i = 0; i < 4; i++)
-                    c[j * 4 + i] = (j == 1 || j == 2) && (i == 1 || i == 2) ? (j == 1 ? (i == 1 ? q00 : q10) : (i == 1 ? q01 : q11))
-                                                                         : texel(b + ivec2(i - 1, j - 1), true);
-            // How busy is the neighbourhood? Flat cartoon art has a few colors; shading/gradients many.
+                for (int i = 0; i < 4; i++) {
+                    uint t4 = (j == 1 || j == 2) && (i == 1 || i == 2) ? (j == 1 ? (i == 1 ? q00 : q10) : (i == 1 ? q01 : q11))
+                                                                      : texel(b + ivec2(i - 1, j - 1), true);
+                    c[j * 4 + i] = t4;
+                    rgb[j * 4 + i] = ivec3(int(t4 & 31u), int((t4 >> 5) & 31u), int((t4 >> 10) & 31u));
+                }
+            // same_color() on two of them, by index
+#define SAME(m, n) (c[m] == c[n] || (c[m] != 0u && c[n] != 0u && all(lessThanEqual(abs(rgb[m] - rgb[n]), ivec3(2)))))
+            // How busy is the neighbourhood? Flat cartoon art has a few colors; shading/gradients many. Only "more
+            // than 5" matters, so counting stops there: the busy areas, the costly case, used to run all 120 pairs.
             int distinct = 0;
-            for (int n = 0; n < 16; n++) {
+            for (int n = 0; n < 16 && distinct <= 5; n++) {
                 bool dup = false;
-                for (int m = 0; m < n; m++) dup = dup || same_color(c[m], c[n]);
+                for (int m = 0; m < n && !dup; m++) dup = SAME(m, n);
                 if (!dup) distinct++;
             }
             int cand[4] = int[4](5, 6, 9, 10);
@@ -250,13 +261,14 @@ void main() {
                 float best = -1e9, second = -1e9;
                 uint cb = c[5], cs = c[5];
                 for (int k = 0; k < 4; k++) {
-                    uint C = c[cand[k]];
+                    int ck = cand[k];
+                    uint C = c[ck];
                     bool seen = false;
-                    for (int m = 0; m < k; m++) seen = seen || same_color(c[cand[m]], C);
+                    for (int m = 0; m < k && !seen; m++) seen = SAME(cand[m], ck);
                     if (seen) continue;
                     float F = 0.0;
                     for (int n = 0; n < 16; n++)
-                        if (same_color(c[n], C)) F += wx[n & 3] * wy[n >> 2];
+                        if (SAME(n, ck)) F += wx[n & 3] * wy[n >> 2];
                     if (F > best) { second = best; cs = cb; best = F; cb = C; }
                     else if (F > second) { second = F; cs = C; }
                 }
@@ -524,12 +536,22 @@ void alloc_wide(Wide &W) {
 
 // A 2D-only screen (menus, title) never draws into the margins, so they'd keep stale pixels from earlier
 // screens: when a shown twin got nothing widened since it was last shown, clear its margins to black.
+// UJL_FPS_STATS: log the widescreen events that look like the picture dropping to 4:3 without the view changing
+static bool g_hw_log;   // hw_set_log: the performance-details setting
+static bool wide_log() {
+    static int on = -1;
+    if (on < 0) on = getenv("UJL_FPS_STATS") != nullptr;
+    return on != 0 || g_hw_log;
+}
 void clear_stale_margins(const GpuDisplay &d) {
     for (Wide &W : wide) {
         if (!W.tex_disp || W.x != d.disp_x || W.y != d.disp_y) continue;
         if (!W.touched) continue; // same finished frame shown again (30 fps games show each frame twice)
         W.touched = false;
         if (!W.wide_drawn) {
+            static int nlog;
+            if (W.last_wide && wide_log() && nlog++ < 300)
+                fprintf(stderr, "wide: margins cleared (no 3D reached them) at frame %u, twin %d,%d\n", frame_no, W.x, W.y);
             flush();
             int m = (int)std::floor((wide_native_w(W) - W.w) * 0.5f * S);
             GLF(BindFramebuffer)(GL_FRAMEBUFFER, W.fbo_draw);
@@ -556,6 +578,12 @@ void note_display(const GpuDisplay &d) {
         if (W.tex_disp && W.x == x && W.y == y && W.w == w && W.h == h) { W.seen = frame_no; return; }
     Wide *slot = &wide[0];
     for (Wide &W : wide) if (!W.tex_disp || W.seen < slot->seen) slot = &W;
+    {
+        static int nlog;
+        if (wide_log() && nlog++ < 300)
+            fprintf(stderr, "wide: new twin for display %d,%d %dx%d at frame %u (replacing %d,%d)\n", x, y, w, h, frame_no,
+                    slot->x, slot->y);
+    }
     free_wide(*slot);
     slot->x = x; slot->y = y; slot->w = w; slot->h = h; slot->seen = frame_no;
     alloc_wide(*slot);
@@ -592,6 +620,7 @@ void sync_wide(int i, int y0, int y1) { // refresh the read copy if rows y0..y1 
     for (int y = y0; y <= y1 && !hit; y++) hit = W.drows[y] != 0;
     if (!hit) return;
     st_sync_wide++;
+    pc_sync_wide++;
     flush();
     GLF(BindFramebuffer)(GL_READ_FRAMEBUFFER, W.fbo_draw);
     GLF(BindFramebuffer)(GL_DRAW_FRAMEBUFFER, W.fbo_read);
@@ -605,6 +634,7 @@ void sync_wide(int i, int y0, int y1) { // refresh the read copy if rows y0..y1 
 void sync_read() {
     if (!any_dirty) return;
     st_sync_read++;
+    pc_sync_read++;
     flush();
     int y0 = 512, y1 = -1;
     uint64_t cols = 0;
@@ -654,6 +684,7 @@ void flush() {
     vert_all.clear();
     for (int i = 0; i < 3; i++) { base[i] = (int)vert_all.size(); vert_all.insert(vert_all.end(), vert_lists[i].begin(), vert_lists[i].end()); }
     st_flush++;
+    pc_flush++;
     GLF(UseProgram)(prog_draw);
     GLF(ActiveTexture)(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex_read);
@@ -987,6 +1018,7 @@ inline uint32_t raw_to_rgba(uint16_t c) {
 
 // copy native VRAM-sized content into a wide twin, centered (pillarboxed 2D: FMV frames, loading screens)
 void copy_into_wide(int wi, GLuint src, int src_x, int src_y, int div, int dx, int dy, int w, int h) {
+    pc_wide_copy++;
     Wide &W = wide[wi];
     float margin = (wide_native_w(W) - W.w) * 0.5f;
     int ox = (int)std::lround((dx - W.x + margin) * S), oy = (dy - W.y) * S;
@@ -1009,6 +1041,7 @@ void copy_into_wide(int wi, GLuint src, int src_x, int src_y, int div, int dx, i
 }
 
 void do_upload(const RecRect *r) {
+    pc_upload++;
     flush();
     const uint16_t *px = (const uint16_t *)(r + 1);
     int w = r->w, h = r->h;
@@ -1037,6 +1070,7 @@ void do_upload(const RecRect *r) {
 }
 
 void do_fill(const RecFill *f) {
+    pc_fill++;
     flush();
     int x = f->x & 1023, y = f->y & 511;
     int w = std::min((int)f->w, 1024 - x), h = std::min((int)f->h, 512 - y);
@@ -1105,6 +1139,7 @@ void copy_wide_to_wide(int si, int di) {
 }
 
 void do_copy(const RecCopy *c) {
+    pc_copy++;
     sync_read();
     int w = std::min((int)c->w, std::min(1024 - c->sx, 1024 - c->dx));
     int h = std::min((int)c->h, std::min(512 - c->sy, 512 - c->dy));
@@ -1352,3 +1387,11 @@ double hw_take_replay_ms(int *replays) {
     perf_replays = 0;
     return ms;
 }
+
+void hw_take_counts(char *buf, int len) {
+    SDL_snprintf(buf, len, "flush %d sync_read %d sync_wide %d upload %d fill %d copy %d wide_copy %d", pc_flush,
+                 pc_sync_read, pc_sync_wide, pc_upload, pc_fill, pc_copy, pc_wide_copy);
+    pc_upload = pc_fill = pc_copy = pc_sync_read = pc_sync_wide = pc_flush = pc_wide_copy = 0;
+}
+
+void hw_set_log(int on) { g_hw_log = on != 0; }

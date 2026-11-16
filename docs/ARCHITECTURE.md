@@ -477,8 +477,40 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   frame loop paced to 60 Hz on iOS (SDL has no swap interval for UIKit OpenGL and presenting doesn't wait for
   the display, so the loop could draw frames nobody sees). Setting "Performance details" (next to Show FPS, ujl.ini
   `perf_details`) adds the longest frame, the average replay time and recorder drops to the FPS line and writes
-  them to ujl.log once a second, which the Files app can share. Still unmeasured on the phone itself: ask for
-  that log if it lags again. Not verified: a physical device (signing,
+  them to ujl.log once a second, which the Files app can share.
+- **Measured on the iPhone 16 Pro (2026-11-16)**, Stage 6 from a script with Autoplay (below), 2x:
+
+  | Textures | GPU per frame avg / max | UI fps avg / min | frames > 40 ms |
+  |---|---|---|---|
+  | Smooth | 20.1 / 61.5 ms | 39 / 10 | 3.8 per s |
+  | Smooth, shader decoding each texel once | 18.5 / 74.8 ms | 41 / 10 | 3.7 per s |
+  | Original | 1.1 / 1.7 ms | 59.9 / 56 | ~0 |
+  | Smooth at 1x | 3.6 / 5.8 ms | 59.3 / 56 | ~0 |
+
+  The Smooth ("vector") filter is the whole cost: up to 32 dependent texel fetches (index, then CLUT) and two
+  16-entry local arrays per pixel, which a phone GPU handles badly; decoding the colors once and stopping the
+  distinct-color count at 6 (kept, identical output) saved under 10%. iOS defaults to Original. The GPU cost
+  follows the shot (5 to 60 ms with the same command counts), so it showed as random drops. Render-pass breaks
+  per frame were few (~1 flush, ~1 read-copy refresh, ~0.5 upload/fill/copy). Limiting frames in flight with
+  fences changed little and a glFinish per frame made it worse, so neither is on (`UJL_GL_FENCE=n`,
+  `UJL_GL_FINISH=1` remain as iOS experiment switches). The first CPU profile also showed host_vblank converting
+  the native frame every vblank (~5% of the game thread) while the hardware renderer showed its own picture; it
+  now does that only when the native frame is shown (software renderer, 24-bit movies, VRAM viewer).
+- **Testing on a phone**: `bash tools/build_ios.sh --device [UDID] [files...]` builds a development-signed copy
+  (bundle id `<id>.dev`, "UJL Dev", the first Apple Development identity and the team's wildcard profile) and
+  installs it with `devicectl`, next to any sideloaded copy. Files go to its Documents. Launch with environment:
+  `xcrun devicectl device process launch --device UDID --terminate-existing --environment-variables
+  '{"UJL_FPS_STATS":"1",...}' io.github.waffulzz.UltimateUJL.dev`; fetch the log with `xcrun devicectl device copy
+  from ... --domain-type appDataContainer --domain-identifier <id>.dev --source Documents/ujl.log`. A relative
+  `UJL_SCRIPT` is read from Documents, so a script copied there drives a run with no hands: Stage 6 =
+  `UJL_SCRIPT=stage6.txt UJL_SCRIPT_UNLOCK=1 UJL_FORCE_SCENE=6,0 UJL_AUTOPLAY=1` with the probe's Stage 1 presses
+  (15 start, 20 start, 36 down, 38/44/50/53/57/61/65/69 circle). With UJL_FPS_STATS the log gets a line a second
+  (UI fps, worst frame, replay time, counts of uploads/fills/copies/read-copy refreshes), a `hitch:` line for every
+  frame over 40 ms with the time per step (events, replay, upload, imgui, render, swap, pace), "gpu_rec: game
+  waited", and "wide:" lines for margins cleared and new wide twins (also with the Performance details setting). `UJL_GPU_SYNC=1` adds a glFinish after the
+  replay and after the UI draw and logs GPU ms per frame. Instruments: Time Profiler works over USB with
+  `--all-processes` (attaching to a pid failed); Metal System Trace timed out "waiting for device to boot" (Xcode
+  27.1 with iOS 27.2). The connection over Wi-Fi dropped mid-trace and mid-install; USB held. Not verified: a physical device (signing,
   speed), the document picker (needs Files content in the simulator), the pad reappearing when a controller
   disconnects (the Mac's controller was passed through the whole time; the Auto check runs every frame from
   SDL's gamepad list), backgrounding.
