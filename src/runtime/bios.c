@@ -1,5 +1,6 @@
 /* High-level emulation of the PS1 BIOS kernel services the game uses. */
 #include "psx.h"
+#include <stdlib.h>
 #include <setjmp.h>
 #include <SDL3/SDL.h>
 
