@@ -155,13 +155,14 @@ jobs:
         if: matrix.sdk == 'iphonesimulator'
         timeout-minutes: 10
         run: |
-          device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS-27-2" in k for x in v if x["name"] == "iPhone Duo"))')
+          runtime=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(k for k,v in d["devices"].items() if "iOS-27-2" in k and any(x["name"] == "iPhone Duo" for x in v)))')
+          device=$(xcrun simctl create UJLPickerTest 'iPhone Duo' "$runtime")
           echo "UJL_TEST_DEVICE=$device" >> "$GITHUB_ENV"
           xcrun simctl boot "$device" || true
           xcrun simctl bootstatus "$device" -b
       - name: Install native picker test
         if: matrix.sdk == 'iphonesimulator'
-        timeout-minutes: 2
+        timeout-minutes: 5
         run: xcrun simctl install "$UJL_TEST_DEVICE" build/ios/UJLPickerTest.app
       - name: Run native picker lifecycle tests
         if: matrix.sdk == 'iphonesimulator'
@@ -193,11 +194,14 @@ jobs:
           for log in "$UJL_TEST_DATA/Documents/picker-test-progress.txt" build/picker-stdout.log build/picker-stderr.log; do
             if [ -f "$log" ]; then tail -20 "$log" | sed 's/^/::error::/'; fi
           done
-          xcrun simctl list devices booted
+          /usr/bin/log show --last 5m --style compact --predicate 'process == "CoreSimulatorService" OR process == "installd"' > build/picker-host.log
+          tail -20 build/picker-host.log | sed 's/^/::error::/'
       - name: Shut down test simulator
         if: always() && matrix.sdk == 'iphonesimulator' && env.UJL_TEST_DEVICE != ''
         timeout-minutes: 1
-        run: xcrun simctl shutdown "$UJL_TEST_DEVICE" || true
+        run: |
+          xcrun simctl shutdown "$UJL_TEST_DEVICE" || true
+          xcrun simctl delete "$UJL_TEST_DEVICE" || true
 
   windows:
     name: Windows (clang, MinGW UCRT)
