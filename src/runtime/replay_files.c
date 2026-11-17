@@ -40,6 +40,22 @@ int replay_files_take_request(const char **name) {
 }
 
 static uint32_t le32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+const void *replay_files_export_data(size_t *size) {
+    *size = 0;
+    if (SDL_GetAtomicInt(&state) != 2 || request_kind != 1) return NULL;
+    *size = BLOCK;
+    return image;
+}
+
+int replay_files_complete_export(int exported) {
+    if (SDL_GetAtomicInt(&state) != 2 || request_kind != 1) return 0;
+    error[0] = 0;
+    result = exported != 0;
+    if (result) LOGI("replay: exported %s", suggested);
+    SDL_SetAtomicInt(&state, 3);
+    return 1;
+}
+
 static int valid_image(const uint8_t *p) {
     if (p[0] != 'S' || p[1] != 'C' || p[3] != 1) return 0;
     const uint8_t *data = p + HEADER;

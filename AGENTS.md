@@ -45,8 +45,8 @@ dev packages, see `.github/workflows/ci.yml`), then run the same `prepare.sh` an
 `.exe` suffix there. Host threads that run recompiled code are created with an explicit 8 MB stack
 (`rt_create_thread` in `bios.c`), because macOS gives secondary threads only 512 KB.
 
-iOS/iPadOS (on a Mac with Xcode and an iOS Simulator runtime; notes in docs/ARCHITECTURE.md, "iOS"): the same
-`build/gen_jp`, cross-compiled into `UltimateUJL.app` (only the `ujl` target exists there). `bash tools/build_ios.sh
+iOS/iPadOS (Xcode 27.2 / iOS 27.2 SDK, deployment target 15.0; notes in docs/ARCHITECTURE.md, "iOS"): the same
+`build/gen_jp`, cross-compiled into `UltimateUJL.app`. `bash tools/build_ios.sh
 "Um Jammer Lammy (JP).bin"` configures `build/ios-sim`, builds, installs on the booted simulator and clones the disc
 image into the app's Documents. `bash tools/build_ios.sh --ipa` writes an unsigned `build/ios-device/UltimateUJL.ipa`
 for sideloading tools that sign it themselves. CI also packages unsigned device IPAs and desktop downloads from the
@@ -54,7 +54,7 @@ generated C bundle (see `ci/README.md`); these contain no disc assets and still 
 Local IPAs remain gitignored. By hand:
 
 ```bash
-cmake -S . -B build/ios-sim -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
+cmake -S . -B build/ios-sim -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator27.2 \
   -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
 cmake --build build/ios-sim
 ```
@@ -76,6 +76,8 @@ Settings persist in `build/cmake/ujl.ini`. The USA disc is found automatically n
 Verification primarily means running the game headless or scripted and inspecting output. The focused
 `ujl_score_test` target checks score traces/native HUD primitives using synthetic RAM (no disc needed):
 `cmake --build build/cmake --target ujl_score_test`, then `build/cmake/ujl_score_test.exe build`.
+`ujl_replay_test` similarly checks asynchronous replay export/import with synthetic data. The iOS simulator-only
+`ujl_ios_picker_test` app checks native UIKit picker lifetimes; CI boots an iPhone Duo with iOS 27.2 to run it.
 
 - **CI smoke test** (`tests/smoke/smoke.py`, run by `.github/workflows/ci.yml` on Windows, Linux and macOS). CI has no
   disc, so it assembles a small synthetic PS-X EXE onto a generated ISO image, recompiles it with `gen.py`, builds
@@ -124,8 +126,8 @@ Verification primarily means running the game headless or scripted and inspectin
   The game log is `build/cmake/ujl.log`.
   Live score comparisons store completed unassisted PB traces beside the executable in `score_traces/`.
   `UJL_SCORE_TRACE_DIR=path` isolates reference files for testing; `UJL_SCORE_LOG=1` logs their sampling/loading.
-  `UJL_CARD_LOG=1` logs card file operations and guest callers. Replay files: desktop builds default to
-  `-DUJL_REPLAY_FILES=ON` (iOS defaults OFF); the setting/ini key is `replay_files`. The probe opts in with
+  `UJL_CARD_LOG=1` logs card file operations and guest callers. Replay files default to `-DUJL_REPLAY_FILES=ON`
+  on desktop and iOS (native Files import/export); the setting/ini key is `replay_files`. The probe opts in with
   `UJL_REPLAY_FILES=1`. `UJL_REPLAY_OPEN=path` / `UJL_REPLAY_SAVE=path` answer a file request without a dialog
   for scripted tests (empty value cancels; errors are logged and cancel). Use only disposable output paths/cards.
 

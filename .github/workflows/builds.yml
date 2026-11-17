@@ -77,18 +77,19 @@ jobs:
       - name: Build game and score checks
         run: |
           set -o pipefail
-          cmake --build build/playable --target ujl ujl_score_test 2>&1 | tee build/playable-build.log
+          cmake --build build/playable --target ujl ujl_score_test ujl_replay_test 2>&1 | tee build/playable-build.log
       - name: Report compiler errors
         if: failure()
         run: |
           if [ -f build/playable-build.log ]; then
             grep -E 'error:|undefined reference|ld: ' build/playable-build.log | head -20 | sed 's/^/::error::/' || true
           fi
-      - name: Check score recorder
+      - name: Check score recorder and replay exchange
         run: |
           suffix=""
           if [ "$RUNNER_OS" = Windows ]; then suffix=.exe; fi
           build/playable/ujl_score_test$suffix build
+          build/playable/ujl_replay_test$suffix build
       - name: Package game
         run: >-
           ${{ matrix.python }} -I tools/package_build.py ${{ matrix.platform }}
@@ -102,20 +103,28 @@ jobs:
 
   ios:
     name: iOS arm64 IPA (unsigned)
-    runs-on: macos-15
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - name: Install packages
         run: brew install ninja
+      - name: Report Apple toolchain
+        run: |
+          xcodebuild -version
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = 27.2
+          echo "::notice title=iOS toolchain::$(xcodebuild -version | tr '\n' ' ') | iphoneos $(xcrun --sdk iphoneos --show-sdk-version) | deployment target 15.0"
       - name: Verify and unpack generated JP code
         run: python3 -I tools/ci_recomp_bundle.py unpack
       - name: Configure device build
         run: >-
           cmake -S . -B build/ios-playable -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos -DCMAKE_OSX_ARCHITECTURES=arm64
+          -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos27.2 -DCMAKE_OSX_ARCHITECTURES=arm64
           -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DUJL_IOS_SIGN_IDENTITY=
+          -DUJL_REPLAY_FILES=ON
           -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DRECOMP_DIR="$PWD/build/gen_ci"
       - name: Build game
         run: |
@@ -131,6 +140,8 @@ jobs:
         run: |
           plutil -lint build/ios-playable/UltimateUJL.app/Info.plist
           test "$(lipo -archs build/ios-playable/UltimateUJL.app/UltimateUJL)" = arm64
+          xcrun vtool -show-build build/ios-playable/UltimateUJL.app/UltimateUJL | tee build/ios-sdk.log
+          awk '$1 == "sdk" {print $2}' build/ios-sdk.log | grep -qx 27.2
       - name: Package unsigned IPA
         run: >-
           python3 -I tools/package_build.py ios-arm64 --build build/ios-playable

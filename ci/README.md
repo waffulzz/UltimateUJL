@@ -11,6 +11,9 @@ The **Playable builds** workflow runs on pushes to `main`, `v*` tags, or manuall
 - macOS Apple Silicon and Intel tar.gz files, including a double-clickable launcher.
 - Physical-device iOS arm64 IPA, unsigned for the user's sideloading tool to sign.
 
+iOS builds are pinned to Xcode 27.2 / iOS 27.2 SDK (minimum supported OS 15.0), with replay Files import/export
+enabled. CI runs the native picker lifecycle checks on the iPhone Duo / iOS 27.2 simulator.
+
 Downloads are workflow artifacts, retained for 90 days. macOS builds are not notarized. The separate **CI**
 workflow continues running synthetic-disc smoke tests, including iOS simulator/device compilation.
 

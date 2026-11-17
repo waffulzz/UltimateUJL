@@ -272,9 +272,10 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     (.mcs/.psx/.mcb, bare SC data). Mode "copy this game's saves" also takes US BASCUS-94448* saves and renames
     them BISCPS-18011*: the first 0x600 bytes share the layout (verified with a real US card: progress and
     unlocks carried over). Imports run on the game thread at vblank.
-- **Host replay files (2026-11-16, src/runtime/replay_files.c)**: desktop builds default to
+- **Host replay files (2026-11-16, src/runtime/replay_files.c)**: desktop and iOS builds default to
   `UJL_REPLAY_FILES=ON`; setting/ini `replay_files` selects native file dialogs instead of card replay slots.
-  iOS defaults OFF and retains the guest path (enabling it requires a save picker). System saves stay on the card.
+  iOS uses native Files import/export pickers. System saves stay on the card; switching the setting off retains
+  the original card replay path.
   - `replay_directory_entries` (8001fe94) builds the menu's replay list from the boot-cached card directory.
     Its three callers are replay-only: the save prompt's capacity check and `replay_slot_picker`
     (801c7adc@COMOD0.MEN). Conditional `filter_` hooks return nonzero to handle these calls, or zero to execute
@@ -304,6 +305,16 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     and errors; invalid choices or failed writes show an error and allow another choice. Cancelling save skips
     it without entering the memory-card error screen. The setting is disabled while a request is active.
     Probe opt-in: `UJL_REPLAY_FILES=1`; `UJL_REPLAY_OPEN` / `UJL_REPLAY_SAVE` supply test paths (empty cancels).
+  - iOS: replay opens use UIKit's `asCopy:YES` temporary sandbox copy, without moving it into Documents by
+    basename (a malformed replay must not overwrite an existing disc/settings file). Export reads the immutable
+    pending SC block through `replay_files_export_data`, writes an atomic copy in a unique app-temporary folder,
+    and presents `initForExportingURLs:asCopy:YES`. UIKit performs the provider write; the frontend never opens
+    the returned provider URL. Only `replay_files_complete_export` on success/cancellation releases the game
+    thread. Cancellation, sheet swipe-dismissal and duplicate callbacks are handled once; staged export files
+    are removed after completion. Invalid imports can retry after the previous picker has dismissed.
+    `ujl_replay_test` verifies this asynchronous exchange with synthetic data. `ujl_ios_picker_test` is an
+    isolated simulator app exercising the real UIKit picker/delegate lifecycle and temporary-file handling,
+    with simulated provider completion; CI runs it on an iPhone Duo / iOS 27.2 simulator.
   - Verified: an imported US replay plays from a raw block and .mcs; checksum failure, truncation, missing file
     and cancellation return safely; full-card loading leaves the card byte-for-byte unchanged; Start -> NO
     returns to all candy bars with exactly one file load. Desktop builds and the synthetic smoke test pass
@@ -474,9 +485,17 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   hold at ~136 s, fade at ~198 s, Stage Select at ~201 s.
 
 ## iOS / iPadOS (2026-11-16)
+- **Toolchain**: iOS CI and `tools/build_ios.sh` select Xcode 27.2 and SDK `iphoneos27.2` /
+  `iphonesimulator27.2`, with deployment target 15.0. CI uses the hosted `xcode-27` image, explicitly sets
+  `DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer`, checks the SDK version and the IPA binary's
+  Mach-O SDK field, and exercises the picker bridge on an iPhone Duo / iOS 27.2 simulator.
+- **Scene lifecycle**: the shared iOS plist declares `SDLSceneConfiguration` with SDL's existing
+  `SDLUIKitSceneDelegate` and a single application scene. Apps linked with the iOS 27 SDK require scene
+  lifecycle support; SDL owns the scene window and forwards its size changes to the renderer/input path.
+  `UILaunchScreen` remains present. The picker test uses the same plist to catch launch regressions.
 - **Build**: CMake's own iOS support (`-DCMAKE_SYSTEM_NAME=iOS`, sysroot `iphonesimulator` or `iphoneos`, arm64,
-  deployment target 15.0) with Ninja, the same clang flags and the same `build/gen_jp`; see AGENTS.md. Only `ujl`
-  is built there (`UJL_IOS` in CMakeLists.txt): a `MACOSX_BUNDLE` named `UltimateUJL.app`, Info.plist from
+  deployment target 15.0) with Ninja, the same clang flags and the same `build/gen_jp`; see AGENTS.md. The `ujl`
+  game target (`UJL_IOS` in CMakeLists.txt) is a `MACOSX_BUNDLE` named `UltimateUJL.app`, Info.plist from
   `assets/ios/Info.plist.in`, the home screen icon copied from `assets/icon/ujl_256.png`, bundle id in the cache
   variable `UJL_IOS_BUNDLE_ID`. With Ninja a post-build step signs the bundle (`UJL_IOS_SIGN_IDENTITY`, default
   ad hoc `-`, which is all the simulator needs). For a phone, either pass a real identity plus a provisioning
@@ -486,7 +505,8 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   signature and zips `Payload/UltimateUJL.app` into an unsigned IPA for sideloading tools (AltStore, Sideloadly)
   that sign it with the user's Apple ID. The Info.plist template carries MinimumOSVersion, UIDeviceFamily and
   CFBundleSupportedPlatforms, which Xcode adds itself and a device checks on install. CI builds
-  both SDKs against the smoke test code (job `ios`, compile and link only). The separate Playable builds workflow
+  both SDKs against the smoke test code; the simulator also runs the isolated native picker test app.
+  The separate Playable builds workflow
   builds the generated JP program for `iphoneos` and uploads an unsigned IPA for sideloading; no Mac is needed
   to produce that artifact. CI checks the bundle plist and arm64 architecture before packaging it.
 - **Renderer: OpenGL ES 3.0, not Metal.** UIKit still has OpenGL ES 3.0 (deprecated since iOS 12, still in the

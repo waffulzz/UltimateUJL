@@ -13,6 +13,10 @@ int replay_files_menu_screen(int screen);
    On failure complete returns 0 and republishes the request, allowing another choice. */
 int replay_files_take_request(const char **default_name);
 int replay_files_complete(const char *path);
+/* UI: iOS exports a prepared copy through UIKit rather than writing a provider URL itself.
+   Data stays immutable until complete_export; neither call may be used for an open request. */
+const void *replay_files_export_data(size_t *size);
+int replay_files_complete_export(int exported);
 const char *replay_files_error(void);
 #ifdef __cplusplus
 }

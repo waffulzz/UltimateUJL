@@ -10,16 +10,8 @@ else()
   set(UJL_IOS OFF)
 endif()
 
-# Native replay dialogs are available on desktop; other targets retain card replays.
-if(UJL_IOS)
-  set(_replay_files_default OFF)
-else()
-  set(_replay_files_default ON)
-endif()
-option(UJL_REPLAY_FILES "Enable host replay files and native file dialogs" ${_replay_files_default})
-if(UJL_IOS AND UJL_REPLAY_FILES)
-  message(FATAL_ERROR "UJL_REPLAY_FILES needs a save-file picker; leave it OFF on iOS")
-endif()
+# Desktop uses SDL dialogs; iOS uses UIKit import/export document pickers.
+option(UJL_REPLAY_FILES "Enable host replay files and native file dialogs" ON)
 
 # Without a build type CMake adds no optimization flags: the frontend (hardware renderer replay), ImGui and SDL
 # (audio resampling, input) were built at -O0. recomp/runtime set -O2 themselves; default everything else to Release.
@@ -99,6 +91,11 @@ if(NOT UJL_IOS)
   target_include_directories(ujl_score_test PRIVATE src/runtime)
   target_link_libraries(ujl_score_test PRIVATE SDL3::SDL3-static)
   target_compile_options(ujl_score_test PRIVATE -UNDEBUG)
+  add_executable(ujl_replay_test EXCLUDE_FROM_ALL tests/replay_export_test.c src/runtime/replay_files.c)
+  target_include_directories(ujl_replay_test PRIVATE src/runtime)
+  target_link_libraries(ujl_replay_test PRIVATE SDL3::SDL3-static)
+  target_compile_definitions(ujl_replay_test PRIVATE UJL_REPLAY_FILES=1)
+  target_compile_options(ujl_replay_test PRIVATE -UNDEBUG)
 endif()
 
 # Dear ImGui (vendored)
@@ -143,6 +140,23 @@ if(UJL_IOS)
     MACOSX_BUNDLE_BUNDLE_VERSION "1"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "${UJL_IOS_BUNDLE_ID}"
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2")
+  if(UJL_IOS_PLATFORM STREQUAL "iPhoneSimulator")
+    # Isolated app: exercises actual UIKit picker/delegate lifetimes with synthetic files, no game/disc.
+    add_executable(ujl_ios_picker_test MACOSX_BUNDLE EXCLUDE_FROM_ALL
+      tests/ios_picker_test.mm src/frontend/platform_ios.mm)
+    target_include_directories(ujl_ios_picker_test PRIVATE src/frontend)
+    target_compile_options(ujl_ios_picker_test PRIVATE -fobjc-arc)
+    target_link_libraries(ujl_ios_picker_test PRIVATE SDL3::SDL3-static
+      "-framework OpenGLES" "-framework UIKit" "-framework Foundation" "-framework UniformTypeIdentifiers" "-framework QuartzCore")
+    set_target_properties(ujl_ios_picker_test PROPERTIES
+      OUTPUT_NAME UJLPickerTest
+      MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/assets/ios/Info.plist.in"
+      MACOSX_BUNDLE_GUI_IDENTIFIER "${UJL_IOS_BUNDLE_ID}.pickertest"
+      MACOSX_BUNDLE_BUNDLE_NAME "UJL Picker Test"
+      MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0" MACOSX_BUNDLE_BUNDLE_VERSION "1")
+    add_custom_command(TARGET ujl_ios_picker_test POST_BUILD
+      COMMAND codesign --force --sign - --timestamp=none "$<TARGET_BUNDLE_DIR:ujl_ios_picker_test>" VERBATIM)
+  endif()
   if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
     # Ninja/Makefiles: the linker signs arm64 binaries ad hoc, but a bundle needs its own signature to install.
     # Ad hoc is enough for the simulator; a device needs a real identity (UJL_IOS_SIGN_IDENTITY) or the Xcode generator.

@@ -258,6 +258,7 @@ static std::atomic<bool> g_replay_picked{false};
 static std::string g_replay_path;
 static std::string g_replay_dialog_error;
 static bool g_replay_cancelled;
+static int g_replay_dialog_kind;
 static void SDLCALL replay_pick_cb(void *, const char *const *files, int) {
     g_replay_cancelled = !files || !files[0];
     g_replay_dialog_error = files ? "" : SDL_GetError();
@@ -268,15 +269,31 @@ static void replay_dialog_tick(SDL_Window *win) {
     if (g_replay_picked.exchange(false)) {
         if (!g_replay_dialog_error.empty())
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Replay file", g_replay_dialog_error.c_str(), win);
-        if (!replay_files_complete(g_replay_cancelled ? nullptr : g_replay_path.c_str()))
+        bool ok;
+#if UJL_IOS
+        if (g_replay_dialog_kind == 1) ok = replay_files_complete_export(!g_replay_cancelled) != 0;
+        else
+#endif
+            ok = replay_files_complete(g_replay_cancelled ? nullptr : g_replay_path.c_str()) != 0;
+        if (!ok)
             SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Replay file", replay_files_error(), win);
     }
     const char *name;
     int kind = replay_files_take_request(&name);
     static const SDL_DialogFileFilter filters[] = {
         {"Um Jammer Lammy replay", "ujlreplay"}, {"PS1 single saves", "mcs;mcb;psx"}, {"All files", "*"}};
-    if (kind == 1) SDL_ShowSaveFileDialog(replay_pick_cb, nullptr, win, filters, 1, name);
-    else if (kind == 2) SDL_ShowOpenFileDialog(replay_pick_cb, nullptr, win, filters, 3, nullptr, false);
+    if (kind) g_replay_dialog_kind = kind;
+    if (kind == 1) {
+#if UJL_IOS
+        size_t size;
+        const void *data = replay_files_export_data(&size);
+        platform_export_file_dialog(replay_pick_cb, nullptr, win, name, data, size);
+#else
+        SDL_ShowSaveFileDialog(replay_pick_cb, nullptr, win, filters, 1, name);
+#endif
+    } else if (kind == 2) {
+        platform_open_file_dialog(replay_pick_cb, nullptr, win, filters, 3, nullptr, false, false);
+    }
 }
 #endif
 

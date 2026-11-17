@@ -9,20 +9,25 @@
 #                                              (AltStore, Sideloadly, ...). No disc assets are packaged;
 #                                              import your own disc after installing. Local IPAs are gitignored.
 #
-# Needs build/gen_jp (tools/prepare.sh), Xcode (with an iOS Simulator runtime for the simulator), cmake and ninja.
+# Needs build/gen_jp (tools/prepare.sh), Xcode 27.2 (and its iOS 27.2 runtime for the simulator), cmake and ninja.
 # For a signed device build see docs/ARCHITECTURE.md, "iOS".
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BUNDLE_ID=$(grep -o 'UJL_IOS_BUNDLE_ID "[^"]*"' CMakeLists.txt | cut -d'"' -f2)
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode_27.2.app/Contents/Developer ]; then
+  export DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer
+fi
+xcrun --sdk iphoneos27.2 --show-sdk-path >/dev/null || {
+  echo "Xcode 27.2 with the iOS 27.2 SDK is required; select it with DEVELOPER_DIR."
+  exit 1
+}
 
 configure() {   # build dir, sdk, extra args
   local dir=$1 sdk=$2
   shift 2
-  if [ ! -f "$dir/build.ninja" ]; then
-    cmake -S . -B "$dir" -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT="$sdk" \
-      -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
-      -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ "$@"
-  fi
+  cmake -S . -B "$dir" -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT="${sdk}27.2" \
+    -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+    -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DUJL_REPLAY_FILES=ON "$@"
 }
 
 if [ "${1:-}" = "--device" ]; then
