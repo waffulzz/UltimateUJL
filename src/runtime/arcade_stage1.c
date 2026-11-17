@@ -24,6 +24,14 @@ static const GameplaySource gameplay_sources[MODE_COUNT] = {
     {{0x12e44, 0x134bc}, 0x12ac4, 0x13ee4, 0x17764, 32},
     {{0x12de4, 0x1345c}, 0x12a64, 0x13e84, 0x17704, 32},
 };
+/* Whole-song note bar grids: u16 0x0b02, u16 slots, u16 player 1 / player 2 characters, then one u16 per
+   slot (bits 0..2 button, 3..5 owner: 1/2 players, 3 teacher). Separate from the scoring chart. */
+static const uint32_t bar_grids[MODE_COUNT] = {0x20f64, 0x24224, 0x24bb4, 0x20dc8, 0x24b0c, 0x242cc};
+/* Face texture programs started by scene op 7 (lip sync, blinks): {records, count} per program, records
+   {s32 time, u16 *resource_ids, s32 id_count}. Program numbers differ per mode. */
+static const struct { uint32_t table; unsigned count; } face_sources[MODE_COUNT] = {
+    {0x19e94, 53}, {0x1ab74, 115}, {0x1a914, 87}, {0x1a07c, 79}, {0x1a86c, 87}, {0x1ac1c, 115},
+};
 typedef struct { uint32_t roots[3]; unsigned counts[3]; } SceneSource;
 static const SceneSource scene_sources[MODE_COUNT] = {
     {{0x8032c534, 0x8032c08c, 0x803327b4}, {69, 71, 9}},
@@ -128,6 +136,52 @@ bool arcade_stage1_scene(unsigned mode, uint8_t *out, size_t capacity, uint32_t 
 invalid_scene:
     return SDL_SetError("Invalid arcade Stage 1 scene tables");
 }
+bool arcade_stage1_faces(unsigned mode, uint8_t *out, size_t capacity, uint32_t guest_base,
+                         ArcadeStage1Faces *info) {
+    if (!info || mode >= MODE_COUNT || !overlays[mode]) return SDL_SetError("Stage 1 faces are not loaded");
+    memset(info, 0, sizeof *info);
+    const uint32_t base = 0x80311898;
+    const uint8_t *src = overlays[mode]; size_t limit = overlay_info[mode].size;
+    size_t root = face_sources[mode].table; unsigned count = face_sources[mode].count;
+    size_t start = limit, end = 0;
+    if (!include_range(root, count * 8u, limit, &start, &end) || le32(src + root) || le32(src + root + 4))
+        goto invalid;
+    for (unsigned pass = 0; pass < (out ? 2u : 1u); pass++) {
+        for (unsigned i = 1; i < count; i++) {
+            uint32_t records = le32(src + root + i * 8), n = le32(src + root + i * 8 + 4);
+            if (!records && !n) continue;
+            if (records < base || !n || n > 64 || !include_range(records - base, n * 12u, limit, &start, &end))
+                goto invalid;
+            for (unsigned j = 0; j < n; j++) {
+                size_t record = records - base + j * 12u;
+                uint32_t ids = le32(src + record + 4), id_count = le32(src + record + 8);
+                if (!id_count) continue;
+                if (ids < base || id_count > 32 || !include_range(ids - base, id_count * 2u, limit, &start, &end))
+                    goto invalid;
+                for (unsigned k = 0; k < id_count; k++) {
+                    unsigned id = le16(src + ids - base + k * 2);
+                    size_t ignored;
+                    if (id && (id >= 1024 || !arcade_stage1_resource(id, &ignored))) goto invalid;
+                    if (pass && id) put16(out + ids - base + k * 2 - start, (uint16_t)(id | ARCADE_STAGE1_RESOURCE_TAG));
+                }
+                if (pass) put32(out + record + 4 - start, guest_base + ids - base - start);
+            }
+            if (pass) put32(out + root + i * 8 - start, guest_base + records - base - start);
+        }
+        if (!pass) {
+            if (end < start || end - start > 262144 || guest_base > UINT32_MAX - (end - start)) goto invalid;
+            info->size = end - start;
+            if (out) {
+                if (capacity < info->size) return SDL_SetError("Stage 1 face buffer is too small");
+                memcpy(out, src + start, info->size);
+            }
+        }
+    }
+    info->table = guest_base + root - start; info->count = count;
+    return true;
+invalid:
+    return SDL_SetError("Invalid arcade Stage 1 face programs");
+}
 bool arcade_stage1_gameplay(unsigned mode, uint8_t *out, size_t capacity, uint32_t guest_base,
                             ArcadeStage1Gameplay *info) {
     if (!info || mode >= MODE_COUNT || !overlays[mode]) return SDL_SetError("Stage 1 mode is not loaded");
@@ -230,6 +284,21 @@ bool arcade_stage1_gameplay(unsigned mode, uint8_t *out, size_t capacity, uint32
     return true;
 invalid:
     return SDL_SetError("Unsupported Stage 1 gameplay table layout");
+}
+
+const uint8_t *arcade_stage1_bar_grid(unsigned mode, size_t *size) {
+    if (size) *size = 0;
+    if (mode >= MODE_COUNT || !overlays[mode]) return NULL;
+    const uint8_t *src = overlays[mode]; size_t limit = overlay_info[mode].size, at = bar_grids[mode];
+    if (at > limit || limit - at < 8 || le16(src + at) != 0x0b02) return NULL;
+    size_t bytes = 8 + (size_t)le16(src + at + 2) * 2;
+    if (le16(src + at + 2) == 0 || bytes > limit - at || le16(src + at + 4) > 3 || le16(src + at + 6) > 3) return NULL;
+    for (size_t i = 8; i < bytes; i += 2) {
+        unsigned slot = le16(src + at + i);
+        if ((slot & 7) > 6 || ((slot >> 3) & 7) > 3) return NULL;
+    }
+    if (size) *size = bytes;
+    return src + at;
 }
 
 /* The board's overlay container is a length-prefixed LZSS stream with a 4KiB zero-filled dictionary,

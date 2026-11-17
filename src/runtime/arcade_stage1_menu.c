@@ -11,6 +11,7 @@ static const StageBar added[] = {
     {18, 0, 4, 31, 31}, /* Lammy/PaRappa versus, on the top half */
 };
 enum { FIRST_BAR = 38, BAR_COUNT = 5 };
+extern int g_unlock_all;
 static bool drawing_added, tooltip_active, bars_submitted;
 static uint32_t added_stack;
 
@@ -27,6 +28,9 @@ static void enable_bars(bool initialize) {
             mem_w8(0x801dea28 + id, 0);
             mem_w8(0x801de9f8 + id, 0);
         }
+        /* "Unlock all" shows every native bar as cleared (clear flag = its availability value; COOL only on
+           Lammy's solo stages). Mark the restored variants the same way. */
+        if (g_unlock_all) mem_w8(0x801dea28 + id, 1);
     }
 }
 int arcade_stage1_menu_screen(CPU *c, int screen) {

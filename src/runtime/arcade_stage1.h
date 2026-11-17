@@ -34,6 +34,16 @@ typedef struct {
 enum { ARCADE_STAGE1_RESOURCE_TAG = 0x4000 };
 bool arcade_stage1_scene(unsigned mode, uint8_t *out, size_t capacity, uint32_t guest_base,
                         ArcadeStage1Scene *info);
+typedef struct {
+    uint32_t table;
+    unsigned count;
+    size_t size;
+} ArcadeStage1Faces;
+/* Scene op 7 face texture programs (lip sync, blinks), relocated with tagged resource IDs. */
+bool arcade_stage1_faces(unsigned mode, uint8_t *out, size_t capacity, uint32_t guest_base,
+                         ArcadeStage1Faces *info);
+/* The mode's whole-song note bar grid (header + one u16 per slot), validated; NULL if absent. */
+const uint8_t *arcade_stage1_bar_grid(unsigned mode, size_t *size);
 /* Stage 1's board command numbers -> the user's console PaRappa VAB sample numbers. */
 unsigned arcade_stage1_rap_voice(unsigned command);
 bool arcade_stage1_unpack(const uint8_t *src, size_t packed_size, uint8_t *out, size_t size);

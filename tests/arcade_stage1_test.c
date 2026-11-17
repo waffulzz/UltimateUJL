@@ -129,7 +129,42 @@ int main(int argc, char **argv) {
                 }
             }
             SDL_free(buffer);
+            /* Note bar: same 992-slot layout as the console grid it replaces, with each mode's characters. */
+            static const uint16_t characters[6][2] = {{2, 0}, {1, 3}, {1, 2}, {1, 0}, {1, 2}, {1, 3}};
+            const uint8_t *grid = arcade_stage1_bar_grid(i, &size);
+            assert(grid && size == 8 + 992 * 2 && (word(grid) & 65535) == 0x0b02 && (word(grid) >> 16) == 992);
+            assert((word(grid + 4) & 65535) == characters[i][0] && (word(grid + 4) >> 16) == characters[i][1]);
+            /* Face programs: every pointer relocated inside the buffer and every texture ID tagged. */
+            ArcadeStage1Faces faces;
+            assert(arcade_stage1_faces(i, NULL, 0, 0, &faces) && faces.count > 50 && faces.size < 262144);
+            uint8_t *face_data = SDL_malloc(faces.size);
+            assert(face_data);
+            assert(!arcade_stage1_faces(i, face_data, faces.size - 1, 0x80100000, &faces));
+            assert(arcade_stage1_faces(i, face_data, faces.size, 0x80100000, &faces));
+            assert(faces.table >= 0x80100000 && faces.table - 0x80100000 + faces.count * 8u <= faces.size);
+            unsigned tagged = 0;
+            for (unsigned p = 1; p < faces.count; p++) {
+                const uint8_t *entry = face_data + faces.table - 0x80100000 + p * 8;
+                uint32_t records = word(entry), n = word(entry + 4);
+                if (!records) continue;
+                assert(records >= 0x80100000 && records - 0x80100000 + n * 12 <= faces.size);
+                for (unsigned r = 0; r < n; r++) {
+                    const uint8_t *record = face_data + records - 0x80100000 + r * 12;
+                    uint32_t ids = word(record + 4), id_count = word(record + 8);
+                    if (!id_count) continue;
+                    assert(ids >= 0x80100000 && ids - 0x80100000 + id_count * 2 <= faces.size);
+                    for (unsigned k = 0; k < id_count; k++) {
+                        unsigned id = face_data[ids - 0x80100000 + k * 2] | face_data[ids - 0x80100000 + k * 2 + 1] << 8;
+                        assert(!id || (id & ARCADE_STAGE1_RESOURCE_TAG));
+                        tagged += id != 0;
+                    }
+                }
+            }
+            assert(tagged > 100);
+            SDL_free(face_data);
         }
+        size_t grid_size = 1;
+        assert(!arcade_stage1_bar_grid(6, &grid_size) && grid_size == 0);
         size_t size = 1;
         assert(!arcade_stage1_overlay(6, &size) && size == 0);
         assert(arcade_stage1_asset_count() == 1184);

@@ -129,9 +129,9 @@ static void dma_run(int ch) {
     int sync = (chcr >> 9) & 3;
     int from_ram = chcr & 1;
     int step = (chcr & 2) ? -4 : 4;
-    /* Imported sound banks can be transferred directly from host-backed guest storage.
-       GPU linked-list addresses retain the console's packet format. */
-    int host_asset = ch == 4 && rt_asset_contains(d->madr, 4);
+    /* Imported sound banks and textures (e.g. face swaps uploaded by LoadImage) can be transferred
+       directly from host-backed guest storage. GPU linked-list addresses retain the console's packet format. */
+    int host_asset = (ch == 4 || (ch == 2 && sync != 2)) && rt_asset_contains(d->madr, 4);
     uint32_t addr = host_asset ? d->madr & ~3u : d->madr & 0x1FFFFC;
 
     if (ch == 6) { /* OTC: reverse clear ordering table */
@@ -195,7 +195,7 @@ static void dma_run(int ch) {
     for (uint32_t i = 0; i < words; i++) {
         uint32_t w;
         if (host_asset && !rt_asset_contains(addr, 4)) {
-            rt_fatal("SPU DMA exceeds the host asset buffer"); return;
+            rt_fatal("DMA%d exceeds the host asset buffer", ch); return;
         }
         if (from_ram) {
             if (host_asset) w = mem_r32(addr);
@@ -244,7 +244,7 @@ void dma_write(uint32_t off, uint32_t v) {
         }
         return;
     }
-    if (reg == 0) dma[ch].madr = ch == 4 && rt_asset_contains(v, 4) ? phys_addr(v) : v & 0xFFFFFF;
+    if (reg == 0) dma[ch].madr = (ch == 4 || ch == 2) && rt_asset_contains(v, 4) ? phys_addr(v) : v & 0xFFFFFF;
     else if (reg == 1) dma[ch].bcr = v;
     else if (reg == 2) {
         if (ch == 6) v = (v & 0x51000000) | 2;

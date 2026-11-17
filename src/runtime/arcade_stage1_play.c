@@ -5,13 +5,13 @@
 void hook_score_attempt_reset(CPU *c, uint32_t fn);
 static uint32_t imported_resources[1024], scene_data;
 static unsigned active_slot;
-static bool player_models_ready;
+static bool player_models_ready, vacuums_shown;
 static bool restoring;
 static uint32_t sequence_start, sequence_end;
-static uint8_t sequence_banks[83];
+static uint8_t sequence_banks[83], sequence_commands[83];
 static uint8_t *console_sound_archive;
-static const uint8_t *guitar_vh, *guitar_vb;
-static uint32_t guitar_vh_size, guitar_vb_size;
+static const uint8_t *guitar_vh, *guitar_vb, *system_vh, *system_vb;
+static uint32_t guitar_vh_size, guitar_vb_size, system_vh_size, system_vb_size;
 static uint32_t loaded_guitar_header, stage_assets_end;
 bool disc_read_file(const char *path, uint8_t **data, uint32_t *size);
 void hook_force_scene(CPU *c, uint32_t fn);
@@ -62,6 +62,10 @@ static bool read_guitar_bank(void) {
                 guitar_vh = console_sound_archive + at; guitar_vh_size = bytes;
             } else if (type == 2 && !memcmp(entry + 4, "S1GG_G.VB", 10)) {
                 guitar_vb = console_sound_archive + at; guitar_vb_size = bytes;
+            } else if (type == 2 && !memcmp(entry + 4, "S1GG_SS.VH", 11)) {
+                system_vh = console_sound_archive + at; system_vh_size = bytes;
+            } else if (type == 2 && !memcmp(entry + 4, "S1GG_SS.VB", 11)) {
+                system_vb = console_sound_archive + at; system_vb_size = bytes;
             }
             at += ((size_t)bytes + 3) & ~(size_t)3;
             if (at > end) goto invalid_bank;
@@ -69,10 +73,13 @@ static bool read_guitar_bank(void) {
         section = end;
     }
     if (guitar_vh && guitar_vb && guitar_vh_size == 3616 && guitar_vb_size == 98880 &&
-        read32(guitar_vh) == 0x56414270 && read16(guitar_vh + 22) == 20) return true;
+        read32(guitar_vh) == 0x56414270 && read16(guitar_vh + 22) == 20 &&
+        system_vh && system_vb && system_vh_size == 3104 && system_vb_size == 238816 &&
+        read32(system_vh) == 0x56414270 && read16(system_vh + 22) == 7) return true;
 invalid_bank:
     free(console_sound_archive); console_sound_archive = NULL;
-    guitar_vh = guitar_vb = NULL; guitar_vh_size = guitar_vb_size = 0;
+    guitar_vh = guitar_vb = system_vh = system_vb = NULL;
+    guitar_vh_size = guitar_vb_size = system_vh_size = system_vb_size = 0;
     return false;
 }
 
@@ -80,9 +87,19 @@ void hook_stage1_bank_load(CPU *c, uint32_t fn) {
     (void)fn;
     const char *overlay = rt_current_overlay_name();
     if (!restoring || active_slot == 0 ||
-        mem_r32(0x80078ae0) != 1 || c->r[6] != 1 ||
+        mem_r32(0x80078ae0) != 1 || c->r[6] > 1 ||
         !overlay || strcmp(overlay, "COMOD1.SNG")) return;
     if (!read_guitar_bank()) { rt_fatal("arcade Stage 1: could not read the native guitar bank"); return; }
+    if (c->r[6] == 0) {
+        /* Bank 0 is the stage's system bank. CMP1SNG.INT has PaRappa's (S1RR_SS); Lammy's Stage 1 bank
+           (S1GG_SS) is identical except for sample 6, the end-of-song failure line. */
+        uint32_t header = rt_asset_alloc(system_vh_size), body = rt_asset_alloc(system_vb_size + 63u);
+        if (!header || !body) { rt_fatal("arcade Stage 1: could not allocate the native system bank"); return; }
+        memcpy(ram_ptr(header), system_vh, system_vh_size);
+        memcpy(ram_ptr(body), system_vb, system_vb_size);
+        c->r[4] = header; c->r[5] = body;
+        return;
+    }
     uint32_t header = rt_asset_alloc(guitar_vh_size), body = rt_asset_alloc(guitar_vb_size + 63u);
     if (!header || !body) { rt_fatal("arcade Stage 1: could not allocate the native guitar bank"); return; }
     memcpy(ram_ptr(header), guitar_vh, guitar_vh_size);
@@ -95,9 +112,13 @@ void hook_stage1_bank_load(CPU *c, uint32_t fn) {
 void hook_stage1_sound_bank(CPU *c, uint32_t fn) {
     (void)fn;
     uint32_t seq = c->r[5];
+    if (restoring && getenv("UJL_STAGE1_SOUND_LOG") && (seq < sequence_start || seq >= sequence_end))
+        LOGI("arcade Stage 1 sound: sequence %08x a0 %08x a2 %08x from %08x", seq, c->r[4], c->r[6], c->r[31]);
     if (!restoring || seq < sequence_start || seq >= sequence_end ||
         ((seq - sequence_start) & 31)) return;
     unsigned slot = sequence_banks[(seq - sequence_start) / 32];
+    if (getenv("UJL_STAGE1_SOUND_LOG"))
+        LOGI("arcade Stage 1 sound: command %u from %08x", sequence_commands[(seq - sequence_start) / 32], c->r[31]);
     int bank = (int16_t)mem_r16(0x801a23f0 + slot * 2);
     if (bank < 0 || bank >= 10) { rt_fatal("arcade Stage 1: missing sound bank"); return; }
     c->r[6] = mem_r32(0x801c50c0 + (unsigned)bank * 4);
@@ -126,6 +147,7 @@ static bool bind_stage_sounds(uint32_t guitar_header) {
         unsigned program = mem_r16(attr + 20), note = mem_r8(attr + 6);
         if (program >= 128 || note >= 128) return false;
         uint32_t seq = sequence_start + made * 32;
+        sequence_commands[made] = (uint8_t)command;
         sequence_banks[made++] = guitar ? 1 : 2;
         uint8_t *p = ram_ptr(seq);
         /* SEQ header: version 1, 480 ticks/quarter, 500000 us/quarter, 4/4. MIDI note-on,
@@ -150,8 +172,10 @@ static void upload_player_textures(void) {
         bool pa = active_slot == 0 || active_slot == 2 || active_slot == 4;
         bool lammy = active_slot != 0;
         bool blue = active_slot == 1 || active_slot == 5;
+        /* VACUUM*.TIM: Lammy's and PaRappa's vacuum cleaner. Same image as Rammy's BL_VA*.TIM (same VRAM),
+           with its own palette, so both can be uploaded. */
         bool selected = (pa && !strncmp(name, "PA", 2)) || (lammy && !strncmp(name, "LA", 2)) ||
-                        (blue && !strncmp(name, "BL", 2));
+                        (blue && !strncmp(name, "BL", 2)) || ((pa || lammy) && !strncmp(name, "VACUUM", 6));
         if (n < 6 || !selected || strcmp(name + n - 4, ".TIM")) continue;
         const uint8_t *data = arcade_stage1_asset(name, &size);
         if (!data || size < 8 || read32(data) != 16) { rt_fatal("Invalid arcade character texture"); return; }
@@ -253,21 +277,43 @@ void hook_stage1_player_models(CPU *c, uint32_t fn) {
         c->r[4] = root; c->r[5] = 8;
         call_indirect(c, 0x801ca7a0);
         add_player_mesh(c, root, 9, 385, c->r[2]);
-        /* Expression meshes start hidden, as in the board's actor constructor. */
+        /* PaRappa's vacuum cleaner (PAV) starts hidden, as in the board's actor constructor. */
         c->r[4] = root; c->r[5] = 9; c->r[6] = 0;
         call_indirect(c, 0x801ca690);
     }
-    player_models_ready = true;
+    player_models_ready = true; vacuums_shown = false;
     *c = saved;
     upload_player_textures();
     LOGI("arcade Stage 1: player models at %08x", root);
 }
 
+/* Console Lammy Stage 1 swaps her guitar for the vacuum cleaner from the final section (slot 896, her
+   actor's animation 57) to the end of the song. COMOD1.SNG has no such switch; do it for every player:
+   Lammy (vacuum 4, guitar 5), Rammy (13, 14) and PaRappa (vacuum 9; he has no guitar). */
+static void update_vacuums(CPU *c) {
+    static const struct { unsigned show, hide; } props[] = {{4, 5}, {13, 14}, {9, 0}};
+    uint32_t root = mem_r32(0x801e45c4);
+    if (!player_models_ready || !root) return;
+    bool want = mem_r32(0x80078af8) / 24 >= 896;
+    if (want == vacuums_shown) return;
+    vacuums_shown = want;
+    CPU saved = *c;
+    for (unsigned i = 0; i < 3; i++) {
+        bool present = i == 0 ? active_slot != 0 : i == 1 ? active_slot == 1 || active_slot == 5
+                     : active_slot % 2 == 0;
+        if (!present) continue;
+        c->r[4] = root; c->r[5] = props[i].show; c->r[6] = want;
+        call_indirect(c, 0x801ca690);
+        if (props[i].hide) { c->r[4] = root; c->r[5] = props[i].hide; c->r[6] = !want; call_indirect(c, 0x801ca690); }
+    }
+    *c = saved;
+}
 void hook_stage1_scene_cues(CPU *c, uint32_t fn) {
     (void)fn;
     if (!restoring || !arcade_stage1_resources_ready()) return;
     uint32_t timeline = mem_r32(0x801dc364);
     if (!timeline) return;
+    update_vacuums(c);
     if (scene_data) {
         /* The arcade loop ends a human versus match when the song and its final scene cues
            are exhausted. The unfinished console Stage 1 loop only notices a KO there. */
@@ -293,11 +339,98 @@ void hook_stage1_scene_cues(CPU *c, uint32_t fn) {
         mem_w32(timeline + 2224 + i * 12, scene.counts[i]);
         mem_w32(timeline + 2228 + i * 12, i == 1);
     }
+    /* Scene op 7 starts face texture programs (lip sync, blinks) by number. Without these the arcade
+       numbers index COMOD1.SNG's own 43 programs and play the wrong mouth sequences. */
+    ArcadeStage1Faces faces;
+    if (!arcade_stage1_faces(active_slot, NULL, 0, 0, &faces)) { rt_fatal("arcade Stage 1: %s", SDL_GetError()); return; }
+    uint32_t face_buffer = rt_asset_alloc(faces.size);
+    if (!face_buffer) { rt_fatal("arcade Stage 1: could not allocate host memory for face programs"); return; }
+    if (!arcade_stage1_faces(active_slot, ram_ptr(face_buffer), faces.size, face_buffer, &faces)) {
+        rt_fatal("arcade Stage 1: %s", SDL_GetError()); return;
+    }
+    mem_w32(timeline + 1992, faces.table);
+    mem_w32(timeline + 2004, faces.count);
     uint32_t table = mem_r32(timeline + 2244);
     mem_w32(timeline + 128, mem_r32(table + 8));
     mem_w32(timeline + 132, mem_r32(table + 12));
     mem_w32(timeline + 140, 0); mem_w32(timeline + 144, 1); mem_w32(timeline + 148, 0);
-    LOGI("arcade Stage 1: scene cues, %zu bytes at %08x", scene.size, buffer);
+    LOGI("arcade Stage 1: scene cues, %zu bytes at %08x; %u face programs", scene.size, buffer, faces.count);
+}
+/* Lyric tracks: one per language, descriptor {0, end 0x6600, records}; records {duration, end, text}.
+   COMOD1.SNG carries PaRappa's lines. Modes with Lammy sing Lammy's vocal channel, so point each COMOD1.SNG
+   track at a copy of the matching COMOD11.SNG track (read through the disc patch layer, so the censored-lyrics
+   setting applies; its replacement lines live in guest kernel RAM). */
+static uint8_t *lammy_overlay;
+static uint32_t lammy_overlay_size;
+static bool lyric_text(uint32_t ptr, const uint8_t **text, size_t *len) {
+    const uint32_t base = 0x801c5110;
+    const uint8_t *s;
+    size_t limit;
+    if (ptr >= base && ptr - base < lammy_overlay_size) { s = lammy_overlay + (ptr - base); limit = lammy_overlay_size - (ptr - base); }
+    else if ((ptr & 0x1fffff) < 0x10000 && (ptr >> 24) == 0x80) { s = ram_ptr(ptr); limit = 0x10000 - (ptr & 0x1fffff); }
+    else return false;
+    for (size_t i = 0; i < limit && i < 200; i++) {
+        if (!s[i]) { *text = s; *len = i; return true; }
+        if ((s[i] < 0x20 && s[i] != '\n') || s[i] >= 0x7f) return false;
+    }
+    return false;
+}
+static void bind_lammy_lyrics(void) {
+    static const uint32_t pa_tracks[] = {0x801deed4, 0x801df87c, 0x801e0178, 0x801e0a98, 0x801e13b8, 0x801e2720};
+    static const uint32_t la_tracks[] = {0x801e1af4, 0x801e238c, 0x801e2b50, 0x801e3338, 0x801e3b20, 0x801e4d10};
+    const uint32_t base = 0x801c5110;
+    if (!lammy_overlay && !disc_read_file("/S1/COMOD11.SNG", &lammy_overlay, &lammy_overlay_size)) {
+        rt_fatal("arcade Stage 1: could not read the native Lammy lyrics"); return;
+    }
+    for (unsigned t = 0; t < 6; t++) {
+        uint32_t pa = pa_tracks[t], la = la_tracks[t] - base;
+        if (la + 12 > lammy_overlay_size || read32(lammy_overlay + la) || read32(lammy_overlay + la + 4) != 0x6600 ||
+            mem_r32(pa) || mem_r32(pa + 4) != 0x6600) { rt_fatal("arcade Stage 1: unexpected lyric layout"); return; }
+        uint32_t records = read32(lammy_overlay + la + 8) - base;
+        unsigned n = 0; size_t text_bytes = 0;
+        for (;; n++) {
+            size_t at = records + n * 12u, len;
+            const uint8_t *text;
+            if (n == 200 || at + 12 > lammy_overlay_size || !lyric_text(read32(lammy_overlay + at + 8), &text, &len)) {
+                rt_fatal("arcade Stage 1: invalid Lammy lyrics"); return;
+            }
+            text_bytes += (len + 4) & ~(size_t)3;
+            if (read32(lammy_overlay + at + 4) >= 0x6600) { n++; break; }
+        }
+        uint32_t out = rt_asset_alloc(n * 12u + text_bytes);
+        if (!out) { rt_fatal("arcade Stage 1: could not allocate Lammy lyrics"); return; }
+        uint32_t text_at = out + n * 12u;
+        for (unsigned i = 0; i < n; i++) {
+            const uint8_t *record = lammy_overlay + records + i * 12u, *text;
+            size_t len;
+            lyric_text(read32(record + 8), &text, &len);
+            mem_w32(out + i * 12, read32(record)); mem_w32(out + i * 12 + 4, read32(record + 4));
+            mem_w32(out + i * 12 + 8, text_at);
+            memcpy(ram_ptr(text_at), text, len); mem_w8(text_at + len, 0);
+            text_at += (len + 4) & ~(size_t)3;
+        }
+        mem_w32(pa + 8, out);
+    }
+}
+/* The note bar does not draw the scoring chart. It shows a static whole-song grid from the overlay,
+   whose header also names the two players' characters (icons and line colours). COMOD1.SNG's own grid is
+   an unfinished placeholder: one button for every note, PaRappa against the teacher. Replace it in place. */
+static void bind_bar_grid(CPU *c, unsigned mode) {
+    enum { COMOD1_BAR_GRID = 0x801e29ac, BAR_LINE = 0x801acaa0 };
+    size_t size;
+    const uint8_t *grid = arcade_stage1_bar_grid(mode, &size);
+    if (!grid || mem_r16(COMOD1_BAR_GRID) != 0x0b02 || mem_r16(COMOD1_BAR_GRID + 2) != read16(grid + 2)) {
+        rt_fatal("arcade Stage 1: note bar layout does not match"); return;
+    }
+    memcpy(ram_ptr(COMOD1_BAR_GRID), grid, size);
+    /* Installing the line resolves the header's character sets; redo it if the stage already has. */
+    if (mem_r32(BAR_LINE) == COMOD1_BAR_GRID) {
+        CPU saved = *c;
+        c->r[4] = COMOD1_BAR_GRID;
+        call_indirect(c, 0x800294c8);
+        *c = saved;
+    }
+    LOGI("arcade Stage 1: note bar for slot %u, characters %u/%u", mode, read16(grid + 4), read16(grid + 6));
 }
 /* Bind the board's charts to the native rhythm engine after its attempt initialization. */
 void hook_song_attempt_reset(CPU *c, uint32_t fn) {
@@ -344,7 +477,16 @@ void hook_song_attempt_reset(CPU *c, uint32_t fn) {
     /* Preserve the original multiplayer options, including a COM opponent. Debug scene
        forcing bypasses those options and starts with the story mode's absent player 2. */
     if (mode % 3 && mem_r32(core + 160) == 5) mem_w32(core + 160, 1);
+    /* AUTO (COM) players: the board files carry no usable COM performance (placeholder or solo filler
+       lines), and COMOD1.SNG installs its schedules for player 1 only. Use the native chart player instead
+       (source 3, as in the attract demo): it plays the notes the chart tags with that player's number. */
+    for (unsigned player = 0; player < 2; player++) {
+        uint32_t source = core + 64 + player * 96;
+        if (mode % 3 && mem_r32(source) >= 2 && mem_r32(source) <= 4) mem_w32(source, 3);
+    }
     mem_w32(core + 324, data.chart); mem_w32(core + 328, data.chart);
     if (rap_overlay && !bind_stage_sounds(guitar_header)) rt_fatal("arcade Stage 1: native sound command mapping failed");
+    if (rap_overlay) bind_bar_grid(c, mode);
+    if (rap_overlay && mode != 0) bind_lammy_lyrics();
     LOGI("arcade Stage 1: chart slot %u, %u notes, %zu bytes at %08x", mode, data.chart_notes, data.size, buffer);
 }
