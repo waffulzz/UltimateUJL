@@ -293,8 +293,10 @@ const char *rt_current_overlay_name(void);
    whichever of the two is still held is masked until released, so a held answer can't turn into a
    note press. */
 extern uint32_t g_prompt_frame, g_gpu_frame;
-/* Port 2 has a pad while Autoplay is on, so 2P versus/co-op can be chosen and Autoplay plays player 2 there. */
-int rt_pad2_present(void) { extern int g_autoplay; return g_autoplay != 0; }
+/* Port 2 has a pad when the frontend routes a second controller (or the keyboard) to player 2, and while Autoplay
+   is on, so 2P versus/co-op can be chosen ("Second Player Select: MANUAL Controller 2") and Autoplay plays player 2. */
+int g_pad2_connected;
+int rt_pad2_present(void) { extern int g_autoplay; return g_pad2_connected || g_autoplay != 0; }
 
 uint16_t rt_pad_state(int port) {
     static int was_swapped[2];

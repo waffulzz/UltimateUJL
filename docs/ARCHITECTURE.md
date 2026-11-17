@@ -509,6 +509,26 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   prompt. Script commands `pause N` and `pause-again N` use host seconds so they can resume while guest time is
   stopped. `UJL_SCRIPT_PAUSE_RESIZE=WxH` resizes halfway through the first pause for renderer checks.
 
+## Two players (2026-11-17)
+- The game already supports 2P on two pads: Stage Select's lower "Team" row (and the restored versus/co-op cells),
+  then Second Player Select offers MANUAL Controller 2 (default when port 2 has a pad), AUTO (the COM player) and
+  MANUAL Controller 1. Player p's input source is block 0x80071cb8 + 96p, +48 (0/1 controller port). The guest only
+  needed port 2 to answer: `rt_pad2_present()` (bios.c, used by the BIOS pad buffers and sio.c) is now
+  `g_pad2_connected || g_autoplay`, and `g_pad_buttons[1]` carries port 2's buttons through `rt_pad_state(1)` (per-port
+  Circle/Cross menu swap and held-button masks, autoplay overlay).
+- Frontend (main.cpp): setting "Player 2" (ini `two_player`): 0 off (everything plays port 1, port 2 empty as
+  before), 1 second controller (default: the second connected controller plays port 2; the first one, the keyboard
+  and touch play port 1; any further controllers port 1; "Swap player 1 and player 2" swaps the first two), 2 keyboard
+  (keyboard plays port 2, every controller port 1). `poll_ports` splits held buttons per port. Port 2 is plugged in
+  while a source is assigned, and a pad lost mid-song stays plugged in (nothing held) until the song ends.
+- Pause: either player's Start opens the pause menu and either can answer it (combined held). The resume
+  quarantine is per port (`PauseMenu::blocked` / `blocked2`), so P2's held answer can't become P2's note while P1
+  can still play a fresh press.
+- Testing: frontend scripts take `p2:<button>`; the probe takes `-press T:p2:BTN`. Either plugs a pad into port 2
+  for the run. Checked: Stage 2 Team via the menus (probe and frontend) reaches Second Player Select with MANUAL
+  Controller 2; in the song player 2's source is 1 and co-op turns alternate (0x80071db8 1/2); P2's press grid
+  (0x801a2410 + 396) records the port-2 presses and stays empty without them.
+
 ## iOS / iPadOS (2026-11-16)
 - **Toolchain**: iOS CI and `tools/build_ios.sh` select Xcode 27.2 and SDK `iphoneos27.2` /
   `iphonesimulator27.2`, with deployment target 15.0. CI uses the hosted `xcode-27` image, explicitly sets
@@ -692,6 +712,20 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   - UJL NOW! CD (CloneCD .img, no SYSTEM.CNF): MOVIE/AM01.IKI + MOVIE/NAMCO.IKI + XA/JOE1.XA.
   - ROM set (MAME "ujlnow"): CRC-32 + size of the 10 ul1* board ROMs, read from a zip's central directory (no
     unzipping) or a folder (or any file in it). The CHD isn't needed.
+  - Arcade import now streams ZIP/ZIP64, including UJLNOW-CDMEDIA.zip's nested ROM and CloneCD archives.
+    It extracts only the ten board ROMs and raw CD to a new managed directory, verifying sizes/CRCs and CD
+    identification before publishing paths. Cancellation removes only that import's fixed output names.
+  - Arcade audio (arcade_audio.c) validates ul1vera.11s and both wave ROMs. The word-swapped MCU's LE16 wave
+    table is at 0x96ee (1820 pointers); descriptors give bank, flags (linear signed-8 or Namco mu-law), start/end.
+    Numeric CRC/length mappings identify playable PS1 ADPCM prefixes at key-on, stopping at the first flags&1
+    block (VAB lengths include a terminal pad). 1411 verified unique guitar/rap mappings replace PCM before
+    ADSR/capture; 28 uncertain matches retain console audio. Direct fractional reading preserves the raw arcade
+    rate: ratio 80/63 (28k/22.05k; guitars 14k/11.025k), usually -20 native frames of encoder delay, with signed
+    level matching. The native decoder still advances pitch/loops/IRQ/ENDX; feedback/effects/miss muting stay
+    native. No downsampled ADPCM replacement is generated. Probe env: UJL_ARCADE_ROMS=ZIP/folder,
+    UJL_ARCADE_AUDIO=0 disables, UJL_ARCADE_AUDIO_LOG logs mapped key-ons. Synthetic checks: ujl_asset_test,
+    tests/asset_import_test.py, ujl_arcade_test. User-bank checks covered all 1439 unique prefixes; Stage 1 A/B
+    retained identical frame/audio clock counts, differing from the first replaced guitar note onward.
   ujl.ini keys: disc, usa_disc, arcade_cd, arcade_roms, setup_done. After setup only imported discs count (the USA
   auto-search next to the JP image only runs before setup, e.g. scripted runs on a fresh ini). Each optional feature
   shows as On / Coming soon / "Needs the X disc". Dev: UJL_SETUP_DROP="a;b" drops files at start, UJL_SETUP_SHOTS=1
@@ -749,7 +783,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     +48 is its input source (player_read_input: 0/1 controller port, 2-4 the game's COM player, 5 nobody). Autoplay drives
     only players on a controller port, on that port; COM partners/opponents and both players of the attract demo
     (source 3) are left alone. Port 2 reports a pad while Autoplay is on (bios.c rt_pad2_present, sio.c), so 2P
-    versus/co-op can be chosen. Mode 0x80078aec: 0 solo, 1 versus (a meter per player, 0x80071dc0 + 10p), 2 co-op
+    versus/co-op can be chosen. (Real two-controller play: see "Two players" below.) Mode 0x80078aec: 0 solo, 1 versus (a meter per player, 0x80071dc0 + 10p), 2 co-op
     (one meter). The chart (cursor 0x80071df0) is shared by both players. (0x80071ddc, first taken for a demo flag, is
     also 1 in versus: not used.)
   - Lines (line_plan): the scorer needs the first press to be the line's first note, every line button pressed once,
@@ -901,3 +935,66 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   behind a hidden window (the user prefers runs on screen, so it's not the default).
 - gen.py: branches whose target is outside the function (overlay data swept as code) become tail calls instead of
   undefined gotos (US COMOD0.MEN tooltip tables broke the US build).
+
+### Arcade Stage 1 restoration (local engineering notes, 2026-11-17)
+
+The production bridge decodes board overlay files 1..6 and data file 17 from validated user ROMs. Raw slots are
+0 Pa solo, 1 Lammy/Lammy co-op, 2 Pa/Lammy versus, 3 Lammy solo, 4 Lammy/Pa co-op, 5 Lammy/Lammy versus.
+Console submodes map through {3,5,1,0,2,4}; submode 0 retains the original console Lammy stage. The native column
+routine maps submodes 1/4 to CMP, 2/5 to COP, 0/3 to SNG (the older unlock.c comment about submode 4 is wrong).
+The restored variants reuse COMOD1.SNG, with tagged resource IDs 0x4000|board_id. Console caption resources keep
+native IDs. Source type-3 resource ordinals exclude TIM sections. The source's inserted mesh 20 shifts props 21..36
+back one slot in the console scene. Expression meshes start hidden, matching the board constructor; leaving the
+Pa face overlay visible caused the apparent streaks. BL textures are grayscale in the ROM, not an upload failure.
+
+Assets use the host arena at guest 0x81000000, retaining original 2 MB RAM mirrors and GPU linked-list addresses.
+SPU DMA 4 accepts this range directly. The JP Stage 1 guitar bank replaces the unused dummy bank during initial
+archive loading, before the guest heap checkpoint. Loading banks after that checkpoint crashes a later retry.
+The arena mark retains bank data across attempt rewinds. Charts, scene cues, models and native SEQ packets are
+attempt scoped. Fever records have nested descriptor/notes pointers at record+28: relocate and bound those too.
+The native rhythm engine generates its own stream flag, so no board 0x2000 flag translation is needed there.
+Native human versus fails to leave the unfinished scene after song end; set its existing completion flag only
+once the song-end bit and exhausted primary cue stream both agree. This returns through the original AGAIN? flow.
+
+Stage Select now uses its original grid directly, with five additional native candy bars (IDs 38..42).
+Lammy/Rammy co-op is column 0 row 1; Lammy/Rammy versus is column 7 row 0; Pa solo is column 11 row 0;
+Lammy/Pa co-op is column 11 row 1; Lammy/Pa versus is column 18 row 0. Both versus bars belong on top.
+The grid descriptor is 801daf30 (22x3, two bytes per cell). Availability/clear/COOL arrays at 801dea58/801dea28/
+801de9f8 have 48 bytes each, so the new IDs fit their padding. Reuse stage_select_bar_draw, native portraits and
+digit sprites, and stage_select_tooltip_build with temporary native Stage 1 word coordinates. Stage Select's
+hardcoded diagonal Down move from Lammy 1 must use menu_grid_move_vertical to reach the new co-op cell.
+Submit added bars between the native pointer and wrapper submissions in the same ordering bucket: moving
+the bars to a nearer bucket hides the pointer under them. Multiplayer retains original player/COM options.
+Validated: all five restored variants to AGAIN?, co-op and versus retry, natural Auto-FEVER with both players at
+all six effects (0x3f), directory/ZIP ROM readers, native-font hardware frontend, clock freeze, synthetic tests,
+software and hardware smoke. These notes and all status MDs stay out of commits as requested.
+Note bar and face programs (2026-11-17 follow-up). The bar does not draw the scoring chart: each song overlay
+has a static whole-song grid (u16 0x0b02, u16 slots=992, u16 P1/P2 characters 1 Lammy/2 PaRappa/3 Rammy, then a
+u16 per slot: bits 0..2 button, 3..5 owner 1/2 players, 3 teacher), installed by 800294c8 (bar line pointer
+801acaa0; frame sets 801ac928[owner]) and drawn by 800295cc. COMOD1.SNG's grid (801e29ac) is a placeholder (one
+button everywhere, PaRappa vs teacher); bind_bar_grid copies the board grid per mode (overlay offsets in
+arcade_stage1.c). Scene op 7 starts face texture programs from timeline+1992 (count +2004): {records, n},
+records {s32 time, u16 *resource_ids, n}; the queued IDs (timeline+830/832) go through temp_buffer_get and
+80028400 (face/mouth TIM swaps = lip sync and blinks). The restore had left COMOD1.SNG's 43 console programs bound
+while the board's cues use their own numbering (53..115 programs), so mouths played wrong sequences. The board
+programs are now relocated with tagged IDs. Those TIMs upload by GPU block DMA from the asset arena, so DMA2
+(non-linked-list) now accepts arena addresses like DMA4.
+COM (AUTO) players: source 2 performs per-phrase COM schedules (com_schedule_install 8001dff8; 16 skill variants
+per line weighted by 8005d234[stage][submode] and the level byte 80078afc+p). The board files carry no usable COM
+data (files 1..3 placeholders, files 4..6 solo filler with identical variants), and COMOD1.SNG installs player 1
+only. Restored modes switch AUTO players to source 3, the native chart player (attract demo), which plays the
+chart notes tagged with that player (record byte 3 low nibble). Measured: every player-2 note right in all modes.
+System bank (sound_bank_load index 0): CMP1SNG.INT's S1RR_SS and CMP11SNG.INT's S1GG_SS differ only in sample 6,
+the end-of-song failure voice (keyed on directly, not via sound_sequence_start). Restored modes with Lammy load
+S1GG_SS. Failure voices are stage-specific (Stage 2 GG_SM/SO/GR_SM/SO samples differ), so no console Stage 1 Rammy
+line exists. UJL_STAGE1_SOUND_LOG=1 logs restored-mode sound commands and other sequence starts.
+Lyrics: six language tracks per song overlay, descriptor {0, end 0x6600, records} (COMOD1.SNG 801deed4..., COMOD11.SNG
+801e1af4...); records {duration, end, text} until end >= 0x6600. Lammy modes sing Lammy's vocal mix, so each
+COMOD1.SNG descriptor is pointed at an arena copy of the COMOD11.SNG track (read through the patch layer; censored
+replacement lines live in kernel RAM). Vacuum: console Lammy's actor callback shows mesh 4 (LAV) and hides 5 (LAG)
+while her animation is 57, from slot 896 to the end; restored modes do this by song slot for Lammy (4/5) and
+Rammy (13/14) and PaRappa (9, no guitar). Textures: VACUUM.TIM/VACUUM_B.TIM (Lammy, PaRappa; palette 320,508)
+share the image rectangle (832,0)/(832,73) with Rammy's BL_VA*.TIM (identical pixels, palette 320,255). The restore
+uploaded only PA*/LA*/BL* TIMs, so VACUUM was missing: Lammy's vacuum borrowed BL_VA's image in Rammy modes, and
+PaRappa's hose sampled stale VRAM (the "streaks", wrongly blamed on a face overlay before). VACUUM* now uploads
+whenever Lammy or PaRappa is present.

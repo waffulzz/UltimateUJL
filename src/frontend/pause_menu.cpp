@@ -23,6 +23,7 @@ PauseAction PauseMenu::choose(int row, uint16_t held) {
     if (row == 2) return PauseAction::Settings;
     visible = false;
     blocked |= held; // the answer/resume button must be released before it can become a note
+    blocked2 |= held; // held is both ports combined: either player may have answered
     previous = held;
     return row == 0 ? PauseAction::Resume : PauseAction::Again;
 }
@@ -40,9 +41,10 @@ PauseAction PauseMenu::input(uint16_t held, bool available, bool confirm_cross, 
     if (pressed & yes) return choose(selection, held);
     return PauseAction::None;
 }
-uint16_t PauseMenu::game_buttons(uint16_t held) {
-    blocked &= held;
-    return visible ? 0 : held & ~blocked;
+uint16_t PauseMenu::game_buttons(uint16_t held, int port) {
+    uint16_t &b = port ? blocked2 : blocked;
+    b &= held;
+    return visible ? 0 : held & ~b;
 }
 int PauseMenu::hit(float x, float y) {
     if (x < 28 || x >= width - 28 || y < 56 || y >= 140) return -1;

@@ -47,6 +47,17 @@ int main() {
     assert(p.input(start, true, true, true) == PauseAction::None && p.visible);
     assert(PauseMenu::hit(100, 65) == 0 && PauseMenu::hit(100, 93) == 1 && PauseMenu::hit(100, 121) == 2);
     assert(PauseMenu::hit(0, 0) == -1);
+    {   // two controllers: player 2 opens and answers; each port's held answer is quarantined on its own
+        PauseMenu q;
+        q.input(0, true, true, false);
+        assert(q.input(start, true, true, false) == PauseAction::Open);   // P2's Start, combined held
+        assert(!q.game_buttons(0, 0) && !q.game_buttons(start, 1));
+        q.input(0, true, true, false);
+        assert(q.input(cross, true, true, false) == PauseAction::Resume); // P2 answers with Cross
+        assert(q.game_buttons(0, 0) == 0 && q.game_buttons(cross, 1) == 0); // P2's held Cross stays out
+        assert(q.game_buttons(cross, 0) == cross);  // P1 was not holding it: a fresh press is a note
+        assert(q.game_buttons(0, 1) == 0 && q.game_buttons(cross, 1) == cross); // released, then pressed again
+    }
     puts("pause: guest suspension, background/manual nesting, menu actions and held-button quarantine passed");
     SDL_Quit();
 }

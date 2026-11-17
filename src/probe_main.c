@@ -32,8 +32,8 @@ static void wav_close(void) {
     wav = NULL;
 }
 
-/* ---- scripted input: -press T:BTN ---- */
-typedef struct { int frame; uint16_t bit; } Press;
+/* ---- scripted input: -press T:BTN, -press T:p2:BTN (controller port 2; any such press plugs a pad in there) ---- */
+typedef struct { int frame; uint16_t bit; int port; } Press;
 static Press presses[4096];
 static int npress;
 static uint16_t btn_bit(const char *n) {
@@ -209,10 +209,11 @@ void host_vblank(void) {
     { extern int g_gpu_dump_prims, g_gpu_log_uploads; const char *e = getenv("PROBE_DUMP_AT"); int at = e ? atoi(e) * 60 : -1; g_gpu_dump_prims = (frames >= at && frames < at + 60) ? (getenv("PROBE_DUMP_ALL") ? 2 : 1) : 0; g_gpu_log_uploads = (at > 0 && frames > at - 600 && frames < at); }
     if (burst_from >= 0 && frames >= burst_from && frames < burst_from + burst_n) dump_frame(10000 + frames);
     {   /* hold each scripted press for 6 frames */
-        uint16_t held = 0;
+        uint16_t held[2] = {0, 0};
         for (int i = 0; i < npress; i++)
-            if (frames >= presses[i].frame && frames < presses[i].frame + 6) held |= presses[i].bit;
-        g_pad_buttons[0] = (uint16_t)~held;
+            if (frames >= presses[i].frame && frames < presses[i].frame + 6) held[presses[i].port] |= presses[i].bit;
+        g_pad_buttons[0] = (uint16_t)~held[0];
+        g_pad_buttons[1] = (uint16_t)~held[1];
     }
     if (frames % 60 == 0) {
         rt_log("[probe] t=%ds prims/s=%u uploads/s=%u (%u px) disp=%dx%d@%d,%d en=%d thread=%d",
@@ -267,8 +268,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-wav")) { wav = fopen("build/shots/audio.wav", "wb"); fseek(wav, 44, SEEK_SET); }
         else if (!strcmp(argv[i], "-press") && i + 1 < argc && npress < 4096) {
             char name[32] = {0}; float t = 0;
-            if (sscanf(argv[++i], "%f:%31s", &t, name) == 2 && btn_bit(name))
-                presses[npress++] = (Press){(int)(t * 60), btn_bit(name)};
+            if (sscanf(argv[++i], "%f:%31s", &t, name) == 2) {
+                int port = !strncmp(name, "p2:", 3);
+                const char *b = name + (port ? 3 : 0);
+                if (btn_bit(b)) presses[npress++] = (Press){(int)(t * 60), btn_bit(b), port};
+                if (port) g_pad2_connected = 1;
+            }
         }
         else disc = argv[i];
     }

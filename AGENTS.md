@@ -112,7 +112,8 @@ Verification primarily means running the game headless or scripted and inspectin
   wav with `-ss <START*60/59.826>`, `-vf scale=640:480:flags=neighbor`. Keep files sent to the user under 30 MB
   (crf ~29 for a 3-minute stage).
 - **Frontend scripts** (the real hardware renderer): `UJL_SCRIPT=file`, with lines
-  `<sec> <button>|shot|burst N|overlay|quit` (`overlay` toggles the F1 settings window).
+  `<sec> <button>|shot|burst N|overlay|quit` (`overlay` toggles the F1 settings window; `p2:<button>` presses on
+  controller port 2 and plugs a pad in there for the run, like the probe's `-press T:p2:BTN`).
   Shots go to `build/cmake/shots/hw_vNNNNN.bmp`. Related variables: `UJL_SCRIPT_ASPECT` (0 4:3 … 3 21:9, 5 auto),
   `UJL_SCRIPT_UNLOCK=1`, `UJL_SCRIPT_CARD`, `UJL_SCRIPT_HIDDEN=WxH`. Confirm-with-Cross is on by default, so menus take
   `cross`.

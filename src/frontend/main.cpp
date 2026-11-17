@@ -63,6 +63,8 @@ static int g_frame_w = 320, g_frame_h = 240;
 static std::vector<uint32_t> g_vram_rgba(1024 * 512);
 static std::atomic<bool> g_frame_new{false};
 static std::atomic<uint16_t> g_input_buttons{0xFFFF};
+static std::atomic<uint16_t> g_input_buttons2{0xFFFF};   // controller port 2 (player 2)
+static std::atomic<bool> g_p2_assigned{false};           // an input source is routed to port 2
 static std::atomic<int> g_vblanks{0};
 static bool g_show_vram;
 // The hardware renderer draws the picture itself; the native frame (host_vblank's conversion of g_vram) is only
@@ -88,13 +90,15 @@ static bool pause_song_context() {
 // held for 6 vblanks, "shot" saves the presented window to shots/hw_vNNNNN.bmp (vblank number) next to the exe. While a script
 // runs, UJL_SCRIPT_CARD picks the memory card file (default script_card.mcd, never the player's card),
 // UJL_SCRIPT_ASPECT the aspect index (not saved) and UJL_SCRIPT_UNLOCK=1 unlocks all stages. "overlay" toggles the
-// settings window (F1).
-struct ScriptEv { int vblank; int kind; uint16_t bit; }; // kind 0 button, 1 shot, 2 quit, 3 settings overlay
+// settings window (F1). "p2:<button>" presses a button on controller port 2; a script that has any connects a pad
+// there for the whole run.
+struct ScriptEv { int vblank; int kind; uint16_t bit; }; // kind 0 button, 1 shot, 2 quit, 3 settings overlay, 4/5 pause, 6 port 2 button
 static std::vector<ScriptEv> g_script;
 static std::atomic<int> g_shot_req{-1};
 static std::atomic<bool> g_script_quit{false};
 static std::atomic<int> g_script_overlay{0};   // pending settings-overlay toggles
-static std::atomic<uint16_t> g_script_held{0};
+static std::atomic<uint16_t> g_script_held{0}, g_script_held2{0};
+static bool g_script_p2;
 static std::atomic<int> g_script_pause_ms{0}, g_script_pause_again{0};
 static uint16_t script_btn(const char *n) {
     static const char *names[] = {"select","l3","r3","start","up","right","down","left","l2","r2","l1","r1","triangle","circle","cross","square"};
@@ -117,6 +121,10 @@ static bool script_load(const char *path) {
             else if (!strcmp(name, "overlay")) g_script.push_back({vb, 3, 0});
             else if ((!strcmp(name, "pause") || !strcmp(name, "pause-again")) && sscanf(line, "%*f %*s %d", &n) == 1)
                 g_script.push_back({vb, !strcmp(name, "pause-again") ? 5 : 4, (uint16_t)std::clamp(n, 1, 30)});
+            else if (!strncmp(name, "p2:", 3) && script_btn(name + 3)) {
+                g_script.push_back({vb, 6, script_btn(name + 3)});
+                g_script_p2 = true;
+            }
             else if (uint16_t b = script_btn(name)) g_script.push_back({vb, 0, b});
         }
     fclose(f);
@@ -124,9 +132,10 @@ static bool script_load(const char *path) {
     return true;
 }
 static uint16_t script_vblank(int vb) {
-    uint16_t held = 0;
+    uint16_t held = 0, held2 = 0;
     for (const ScriptEv &e : g_script) {
         if (e.kind == 0 && vb >= e.vblank && vb < e.vblank + 6) held |= e.bit;
+        else if (e.kind == 6 && vb >= e.vblank && vb < e.vblank + 6) held2 |= e.bit;
         else if (e.kind == 1 && vb == e.vblank) g_shot_req = vb;
         else if (e.kind == 2 && vb == e.vblank) g_script_quit = true;
         else if (e.kind == 3 && vb == e.vblank) g_script_overlay++;
@@ -135,6 +144,7 @@ static uint16_t script_vblank(int vb) {
             g_script_pause_ms = (int)e.bit * 1000;
         }
     }
+    g_script_held2 = held2;
     return held;
 }
 
@@ -154,7 +164,9 @@ struct Settings {
     bool perf = false;     // FPS line + ujl.log: frame times, renderer replay time, recorder drops (once a second)
     int  touch = TOUCH_NEVER; // on-screen controller: TOUCH_AUTO (no controller connected), TOUCH_ALWAYS, TOUCH_NEVER
     int  touch_layout = 0;    // 0: the picture fills the screen, buttons over it; 1: the picture fits between the buttons
+    int  two_player = 1;      // TWO_P_*: what plays controller port 2
 };
+enum { TWO_P_OFF, TWO_P_SECOND_PAD, TWO_P_KEYBOARD };
 static const float k_aspects[] = {4.0f / 3.0f, 16.0f / 9.0f, 16.0f / 10.0f, 21.0f / 9.0f, 32.0f / 9.0f, 0.0f};
 static Settings g_set;
 
@@ -172,6 +184,10 @@ extern "C" void host_vblank(void) {
     g_pause_replay = mem_r32(0x80071dd0) == 1;
     if (!g_script.empty()) g_script_held = script_vblank(vb);
     g_pad_buttons[0] = g_input_buttons.load();
+    g_pad_buttons[1] = g_input_buttons2.load();
+    /* Port 2 follows the player 2 assignment, but a pad that goes away mid-song (battery, cable) stays plugged in
+       with nothing held until the song ends, so the game's 2P state never loses its controller under it. */
+    g_pad2_connected = g_p2_assigned.load() || g_script_p2 || (g_pad2_connected && g_pause_available.load());
     static int again_frames;
     if (g_again_request.exchange(0) && pause_song_context()) again_frames = 6;
     if (again_frames) { g_pad_buttons[0] &= (uint16_t)~(1u << B_START); again_frames--; }
@@ -223,7 +239,7 @@ static void pause_action(PauseAction action) {
         fprintf(stderr, "pause: requested at vblank %d\n", g_vblanks.load());
     } else if (action == PauseAction::Resume || action == PauseAction::Again) {
         if (action == PauseAction::Again) g_again_request = 1;
-        g_input_buttons = 0xffff;
+        g_input_buttons = g_input_buttons2 = 0xffff;
         rt_pause_set(RT_PAUSE_USER, 0);
         const char *label = action == PauseAction::Again ? (g_pause_menu.replay ? "exit replay" : "AGAIN?") : "resume";
         fprintf(stderr, "pause: %s at vblank %d\n", label, g_vblanks.load());
@@ -379,11 +395,26 @@ static void close_pad(SDL_JoystickID id) {
 }
 
 static uint16_t pad_held(SDL_Gamepad *pad);
+static uint16_t keyboard_held();
 
-static uint16_t poll_buttons(bool keyboard) {
+// Which port each input source plays (0 player 1, 1 player 2). Second controller: the first connected controller,
+// the keyboard and touch play player 1, the second connected controller player 2, any further ones player 1.
+// Keyboard: the keyboard plays player 2 and every controller player 1. Off: everything plays player 1.
+static int pad_port(size_t i) { return g_set.two_player == TWO_P_SECOND_PAD && i == 1 ? 1 : 0; }
+static int keyboard_port() { return g_set.two_player == TWO_P_KEYBOARD ? 1 : 0; }
+static bool p2_assigned() {
+    return g_set.two_player == TWO_P_KEYBOARD || (g_set.two_player == TWO_P_SECOND_PAD && g_pads.size() >= 2);
+}
+
+// Buttons held per port (active high).
+static void poll_ports(bool keyboard, uint16_t held[2]) {
+    held[0] = held[1] = 0;
+    for (size_t i = 0; i < g_pads.size(); i++) held[pad_port(i)] |= pad_held(g_pads[i]);
+    if (keyboard) held[keyboard_port()] |= keyboard_held();
+}
+
+static uint16_t keyboard_held() {
     uint16_t held = 0;
-    for (SDL_Gamepad *g : g_pads) held |= pad_held(g);
-    if (!keyboard) return (uint16_t)~held;
     const bool *k = SDL_GetKeyboardState(nullptr);
     auto set = [&](int bit, bool on) { if (on) held |= (uint16_t)(1u << bit); };
     set(B_UP, k[SDL_SCANCODE_UP] || k[SDL_SCANCODE_W]);
@@ -400,7 +431,7 @@ static uint16_t poll_buttons(bool keyboard) {
     set(B_R2, k[SDL_SCANCODE_3]);
     set(B_START, k[SDL_SCANCODE_RETURN]);
     set(B_SELECT, k[SDL_SCANCODE_BACKSPACE]);
-    return (uint16_t)~held;
+    return held;
 }
 
 static uint16_t pad_held(SDL_Gamepad *pad) {
@@ -929,6 +960,7 @@ int main(int argc, char **argv) {
     g_set.stretch_ui = ini_get("stretch_ui", "0") == "1";
     g_set.touch = std::max(0, std::min(2, atoi(ini_get("touch_controls", UJL_IOS ? "0" : "2").c_str())));
     g_set.touch_layout = ini_get("touch_layout", "0") == "1" ? 1 : 0;
+    g_set.two_player = std::max(0, std::min(2, atoi(ini_get("two_player", "1").c_str())));
     g_set.perf = ini_get("perf_details", "0") == "1";
     g_unlock_all = ini_get("unlock_all", "0") == "1";
     g_cd_fast_load = ini_get("fast_load", "0") == "1";
@@ -1023,15 +1055,23 @@ int main(int argc, char **argv) {
             }
         }
         uint16_t touch_held = touchpad_held();
-        uint16_t held = (uint16_t)(~poll_buttons(true) | touch_held | g_script_held.load());
+        uint16_t ports[2], game_ports[2];
+        poll_ports(true, ports);
+        poll_ports(!ImGui::GetIO().WantCaptureKeyboard, game_ports);
+        ports[0] |= touch_held | g_script_held.load();
+        ports[1] |= g_script_held2.load();
+        game_ports[0] |= touch_held | g_script_held.load();
+        game_ports[1] |= g_script_held2.load();
+        uint16_t held = ports[0] | ports[1];   // either player can pause and answer the pause menu
+        g_p2_assigned = p2_assigned();
         pause_action(g_pause_menu.input(held, g_pause_available, g_confirm_cross != 0, g_set.show_overlay));
-        uint16_t game_held = (uint16_t)(~poll_buttons(!ImGui::GetIO().WantCaptureKeyboard) | touch_held | g_script_held.load());
-        g_input_buttons = (uint16_t)~g_pause_menu.game_buttons(game_held);
+        g_input_buttons = (uint16_t)~g_pause_menu.game_buttons(game_ports[0], 0);
+        g_input_buttons2 = (uint16_t)~g_pause_menu.game_buttons(game_ports[1], 1);
         if (int ms = g_script_pause_ms.exchange(0); ms > 0) {
             if (!g_pause_available || g_pause_menu.visible) { pause_test.failed = true; fprintf(stderr, "pause-check: unavailable\n"); }
             else {
                 pause_test.waiting = true; pause_test.duration = ms; pause_test.again = g_script_pause_again.exchange(0);
-                pause_action(g_pause_menu.toggle(held)); g_input_buttons = 0xffff;
+                pause_action(g_pause_menu.toggle(held)); g_input_buttons = g_input_buttons2 = 0xffff;
             }
         }
         if (pause_test.waiting && rt_pause_active()) {
@@ -1541,15 +1581,43 @@ int main(int argc, char **argv) {
                                        "between its buttons while it shows.");
                 ImGui::EndTooltip();
             }
+            if (ImGui::Combo("Player 2", &g_set.two_player, "Off (every controller plays player 1)\0Second controller\0Keyboard (controllers play player 1)\0"))
+                ini_set("two_player", std::to_string(g_set.two_player));
+            if (ImGui::BeginItemTooltip()) {
+                ImGui::TextUnformatted("Plugs a second pad into controller port 2 for versus and co-op.\n"
+                                       "Pick the stage, then the \"Team\" row; at Second Player Select choose\n"
+                                       "MANUAL (Controller 2). Either player's Start opens the pause menu.\n"
+                                       "Second controller: the first controller connected (with the keyboard)\n"
+                                       "is player 1, the second one player 2.");
+                ImGui::EndTooltip();
+            }
             if (g_pads.empty()) ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), UJL_IOS ? "No controller connected" : "No controller detected (keyboard only)");
-            for (SDL_Gamepad *g : g_pads) ImGui::BulletText("%s", SDL_GetGamepadName(g));
+            for (size_t i = 0; i < g_pads.size(); i++)
+                ImGui::BulletText("%s%s", SDL_GetGamepadName(g_pads[i]),
+                                  g_set.two_player == TWO_P_OFF ? "" : pad_port(i) ? "  (player 2)" : "  (player 1)");
+            if (g_set.two_player == TWO_P_SECOND_PAD) {
+                if (g_pads.size() >= 2) {
+                    if (ImGui::Button("Swap player 1 and player 2")) std::swap(g_pads[0], g_pads[1]);
+                } else {
+                    ImGui::TextDisabled("Connect a second controller for player 2");
+                }
+            } else if (g_set.two_player == TWO_P_KEYBOARD) {
+                ImGui::BulletText("Keyboard  (player 2)");
+            }
             {
                 static const char *names[16] = {"Select", "L3", "R3", "Start", "Up", "Right", "Down", "Left",
                                                 "L2", "R2", "L1", "R1", "Tri", "Circle", "Cross", "Square"};
-                uint16_t held = (uint16_t)~g_input_buttons.load();
-                std::string s2;
-                for (int b = 0; b < 16; b++) if (held & (1u << b)) { s2 += names[b]; s2 += ' '; }
-                ImGui::Text("Held: %s", s2.empty() ? "-" : s2.c_str());
+                auto held_text = [](uint16_t held) {
+                    std::string s2;
+                    for (int b = 0; b < 16; b++) if (held & (1u << b)) { s2 += names[b]; s2 += ' '; }
+                    return s2.empty() ? std::string("-") : s2;
+                };
+                if (g_pad2_connected) {
+                    ImGui::Text("Held P1: %s", held_text((uint16_t)~g_input_buttons.load()).c_str());
+                    ImGui::Text("Held P2: %s", held_text((uint16_t)~g_input_buttons2.load()).c_str());
+                } else {
+                    ImGui::Text("Held: %s", held_text((uint16_t)~g_input_buttons.load()).c_str());
+                }
             }
             ImGui::SeparatorText("Debug");
             ImGui::Checkbox("VRAM viewer (F2)", &g_show_vram);
