@@ -25,6 +25,7 @@
  * An exact copy scores 3 per note, which stays GOOD (the threshold is ~40). Auto-COOL keeps the chart notes and adds
  * presses (with the line's buttons) chosen by rhythm_fill: the most the game would score, preferring the beat. */
 #include "psx.h"
+#include "arcade_stage1.h"
 #include "recomp.h"
 #include "replay_files.h"
 #include <stdio.h>
@@ -80,7 +81,11 @@ static int in_song(void) {
     return !strcmp(ov + n - 4, ".SNG") || !strcmp(ov + n - 4, ".CMP") || !strcmp(ov + n - 4, ".COP");
 }
 
-static int guest_ptr_ok(uint32_t p) { return p >= 0x80010000u && p < 0x801FFFF0u && !(p & 3); }
+static int guest_ptr_ok(uint32_t p) {
+    if (p & 3) return 0;
+    return (p >= 0x80010000u && p < 0x801FFFF0u) ||
+           (g_asset_ram_capacity >= 16 && phys_addr(p) - HOST_ASSET_BASE < g_asset_ram_capacity - 16);
+}
 
 static void plan_add(int slot, int id) {
     for (int i = 0; i < nplan; i++) if (plan[i].slot == slot) return;
@@ -511,6 +516,7 @@ void hook_hiscore_insert(CPU *c, uint32_t fn) {
 void hook_menu_screen(CPU *c, uint32_t fn) {
     (void)fn;
     int id = replay_files_menu_screen((int)c->r[4]);
+    id = arcade_stage1_menu_screen(c, id);
     c->r[4] = (uint32_t)id;
     if (log_on > 0) rt_log("autoplay: menu screen %d%s", id, skip_post_saves ? " (skipping saves)" : "");
     if (!skip_post_saves) return;

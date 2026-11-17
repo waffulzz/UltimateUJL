@@ -3,10 +3,12 @@
 #include <cstdint>
 #include <vector>
 
-enum class PauseAction { None, Open, Resume, Again, Settings };
+enum class PauseAction { None, Open, Resume, Again, Settings, Back };
 struct PauseMenu {
     bool visible = false;
     bool replay = false;
+    bool stage_picker = false;
+    int picker_mode = -1; // -1 mode, 0 solo, 1 co-op, 2 versus
     int selection = 0;
     uint16_t previous = 0, blocked = 0;
     PauseAction input(uint16_t held, bool available, bool confirm_cross, bool settings_open);

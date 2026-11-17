@@ -47,6 +47,18 @@ int main() {
     assert(p.input(start, true, true, true) == PauseAction::None && p.visible);
     assert(PauseMenu::hit(100, 65) == 0 && PauseMenu::hit(100, 93) == 1 && PauseMenu::hit(100, 121) == 2);
     assert(PauseMenu::hit(0, 0) == -1);
+    // Stage selection shares the native panel and navigation, but Start confirms the
+    // selected item and Back leaves the panel open for the owning picker to handle.
+    PauseMenu picker;
+    picker.visible = picker.stage_picker = true;
+    picker.input(0, false, true, false);
+    picker.input(down, false, true, false);
+    picker.input(0, false, true, false);
+    assert(picker.input(start, false, true, false) == PauseAction::Again && picker.visible);
+    picker.input(0, false, true, false);
+    assert(picker.input(1 << B_CIRCLE, false, true, false) == PauseAction::Back && picker.visible);
+    assert(picker.toggle(0) == PauseAction::Back);
+    assert(!picker.game_buttons(cross | select));
     puts("pause: guest suspension, background/manual nesting, menu actions and held-button quarantine passed");
     SDL_Quit();
 }

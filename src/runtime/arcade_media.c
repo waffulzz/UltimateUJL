@@ -10,6 +10,35 @@ const ArcadeRomFile arcade_rom_files[10] = {
 };
 extern bool disc_image_has_file(const char *image, const char *file);
 
+bool arcade_rom_read(const char *path, unsigned index, uint8_t *out, AssetZip *zip) {
+    if (index >= 10 || !path || !out) return SDL_SetError("Invalid arcade ROM request");
+    const ArcadeRomFile *rom = arcade_rom_files + index;
+    if (zip && zip->io) {
+        AssetZipEntry e;
+        if (!asset_zip_find(zip, rom->name, &e)) return false;
+        if (e.size != rom->size || e.crc != rom->crc)
+            return SDL_SetError("%s does not match the UJL NOW! board ROM", rom->name);
+        if (!asset_zip_read(zip, &e, out, rom->size)) return false;
+    } else {
+        int count = 0;
+        char **names = SDL_GlobDirectory(path, rom->name, SDL_GLOB_CASEINSENSITIVE, &count);
+        bool ok = false;
+        if (names && count == 1) {
+            char *file = NULL;
+            SDL_asprintf(&file, "%s/%s", path, names[0]);
+            SDL_IOStream *io = file ? SDL_IOFromFile(file, "rb") : NULL;
+            ok = io && SDL_GetIOSize(io) == rom->size && SDL_ReadIO(io, out, rom->size) == rom->size;
+            if (io) SDL_CloseIO(io);
+            SDL_free(file);
+        }
+        SDL_free(names);
+        if (!ok) return SDL_SetError("Could not read arcade ROM %s", rom->name);
+    }
+    if (asset_crc32(0, out, rom->size) != rom->crc)
+        return SDL_SetError("Arcade ROM %s failed its CRC check", rom->name);
+    return true;
+}
+
 typedef struct {
     AssetZipProgress callback;
     void *user;

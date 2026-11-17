@@ -52,8 +52,11 @@ set(RUNTIME_SOURCES
   src/runtime/cpu.c
   src/runtime/pause.c
   src/runtime/asset_zip.c
+  src/runtime/asset_memory.c
   src/runtime/arcade_media.c
   src/runtime/arcade_audio.c
+  src/runtime/arcade_stage1.c
+  src/runtime/arcade_stage1_play.c
   src/runtime/bios.c
   src/runtime/gte.c
   src/runtime/gpu.c
@@ -97,11 +100,11 @@ if(NOT UJL_IOS)
   target_include_directories(ujl_probe PRIVATE src)
   target_link_libraries(ujl_probe PRIVATE runtime)
   # Focused native HUD/trace checks; synthetic RAM only, no disc assets.
-  add_executable(ujl_score_test EXCLUDE_FROM_ALL tests/score_delta_test.c src/runtime/score_delta.c)
+  add_executable(ujl_score_test EXCLUDE_FROM_ALL tests/score_delta_test.c src/runtime/score_delta.c src/runtime/asset_memory.c)
   target_include_directories(ujl_score_test PRIVATE src/runtime)
   target_link_libraries(ujl_score_test PRIVATE SDL3::SDL3-static)
   target_compile_options(ujl_score_test PRIVATE -UNDEBUG)
-  add_executable(ujl_replay_test EXCLUDE_FROM_ALL tests/replay_export_test.c src/runtime/replay_files.c)
+  add_executable(ujl_replay_test EXCLUDE_FROM_ALL tests/replay_export_test.c src/runtime/replay_files.c src/runtime/asset_memory.c)
   target_include_directories(ujl_replay_test PRIVATE src/runtime)
   target_link_libraries(ujl_replay_test PRIVATE SDL3::SDL3-static)
   target_compile_definitions(ujl_replay_test PRIVATE UJL_REPLAY_FILES=1)
@@ -115,6 +118,9 @@ if(NOT UJL_IOS)
   add_executable(ujl_arcade_test EXCLUDE_FROM_ALL tests/arcade_audio_test.c)
   target_link_libraries(ujl_arcade_test PRIVATE runtime)
   target_compile_options(ujl_arcade_test PRIVATE -UNDEBUG)
+  add_executable(ujl_arcade_stage1_test EXCLUDE_FROM_ALL tests/arcade_stage1_test.c)
+  target_link_libraries(ujl_arcade_stage1_test PRIVATE runtime)
+  target_compile_options(ujl_arcade_stage1_test PRIVATE -UNDEBUG)
 endif()
 
 # Dear ImGui (vendored)

@@ -1,0 +1,45 @@
+/* Runtime-only Stage 1 arcade resources. Nothing extracted from a ROM is distributed with the port. */
+#pragma once
+#include <SDL3/SDL.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+bool arcade_stage1_init(const char *rom_set);
+void arcade_stage1_clear(void);
+bool arcade_stage1_resources_ready(void);
+/* Native Stage Select bridge. The frontend answers the picker while the guest is parked. */
+void arcade_stage1_frontend_picker(bool enabled);
+bool arcade_stage1_picker_pending(void);
+void arcade_stage1_picker_answer(int submode); /* -1 returns to Stage Select */
+struct CPU;
+int arcade_stage1_menu_screen(struct CPU *c, int screen);
+/* Indices 0..5 select the board's six Stage 1 overlay slots. */
+const uint8_t *arcade_stage1_overlay(unsigned mode, size_t *size);
+const uint8_t *arcade_stage1_asset(const char *name, size_t *size);
+const uint8_t *arcade_stage1_resource(unsigned index, size_t *size);
+unsigned arcade_stage1_asset_count(void);
+const char *arcade_stage1_asset_name(unsigned index);
+typedef struct {
+    /* phrases contains solo difficulty profiles; multiplayer uses the same table for both. */
+    uint32_t scripts[2], phrases[2], fever, chart;
+    size_t size;
+    unsigned chart_notes;
+} ArcadeStage1Gameplay;
+/* Relocate gameplay data into a caller-owned guest buffer. Returns offsets when guest_base is zero. */
+bool arcade_stage1_gameplay(unsigned mode, uint8_t *out, size_t capacity, uint32_t guest_base,
+                            ArcadeStage1Gameplay *info);
+typedef struct {
+    uint32_t tables[3];
+    unsigned counts[3];
+    size_t size;
+} ArcadeStage1Scene;
+/* Native scene commands use tagged resource IDs so console caption resources remain separate. */
+enum { ARCADE_STAGE1_RESOURCE_TAG = 0x4000 };
+bool arcade_stage1_scene(unsigned mode, uint8_t *out, size_t capacity, uint32_t guest_base,
+                        ArcadeStage1Scene *info);
+/* Stage 1's board command numbers -> the user's console PaRappa VAB sample numbers. */
+unsigned arcade_stage1_rap_voice(unsigned command);
+bool arcade_stage1_unpack(const uint8_t *src, size_t packed_size, uint8_t *out, size_t size);
+#ifdef __cplusplus
+}
+#endif

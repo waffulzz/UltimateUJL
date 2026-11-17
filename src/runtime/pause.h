@@ -4,7 +4,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-enum { RT_PAUSE_USER = 1, RT_PAUSE_BACKGROUND = 2 };
+enum { RT_PAUSE_USER = 1, RT_PAUSE_BACKGROUND = 2, RT_PAUSE_STAGE_PICKER = 4 };
 void rt_pause_set(int reason, int on); /* UI thread; reasons compose across app suspension */
 int rt_pause_requested(void);
 int rt_pause_active(void);            /* guest is parked; RAM/VRAM may be read */

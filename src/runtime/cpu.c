@@ -60,6 +60,7 @@ void cpu_syscall(CPU *c, uint32_t pc) {
 }
 
 void cpu_break(CPU *c, uint32_t pc) {
+    rt_dump_stack("guest break");
     rt_fatal("break at %08x (ra=%08x)", pc, c->r[31]);
 }
 

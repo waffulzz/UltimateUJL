@@ -95,6 +95,18 @@
 
 # ---- replay save format and host-file integration
 8001473c temp_buffer_alloc
+8001486c temp_buffer_get
+801c81b8@COMOD1.SNG stage1_rap_scene_step
+801cd05c@COMOD1.SNG stage1_rap_timeline_step
+801ca530@COMOD1.SNG stage1_rap_mesh_add
+801ca690@COMOD1.SNG stage1_rap_mesh_visible
+801ca718@COMOD1.SNG stage1_rap_mesh_setup
+801ca7a0@COMOD1.SNG stage1_rap_mesh_coord
+801ca828@COMOD1.SNG stage1_rap_animation_bind
+801c9250@COMOD1.SNG stage1_rap_packets_free
+801c91d4@COMOD1.SNG stage1_rap_packets_alloc
+800518e8 sound_sequence_start
+80017140 sound_bank_load
 800147d0 temp_buffer_release
 8001fe94 replay_directory_entries
 8001ff78 replay_card_load

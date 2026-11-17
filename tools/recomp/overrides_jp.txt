@@ -12,7 +12,7 @@ SpuSetTransferStartAddr  hle_spu_set_transfer_addr
 # Debug: UJL_FORCE_RATING pins the rating (src/runtime/unlock.c).
 rating_from_meter  hook_force_rating
 # Debug: UJL_FORCE_SCENE=stage,sub turns a Stage 1 story start into that stage/sub (8,3 = staff roll) (src/runtime/unlock.c).
-scene_loader  hook_force_scene
+scene_loader  hook_stage1_scene_route
 # English tooltip bar: point Stage Select tooltip sprites at the US word sheet (src/runtime/patch.c).
 menu_sprite_submit  hook_tooltip_sprite
 # English credits song: hold the JP staff roll's end cue until the longer US song has finished (src/runtime/patch.c).
@@ -26,4 +26,9 @@ replay_directory_entries filter_replay_directory
 replay_slot_picker filter_replay_slots
 replay_card_save filter_replay_save
 stage_results_apply hook_score_run_finish
-song_attempt_reset hook_score_attempt_reset
+song_attempt_reset hook_song_attempt_reset
+temp_buffer_get filter_stage1_asset_lookup
+stage1_rap_scene_step hook_stage1_player_models
+stage1_rap_timeline_step hook_stage1_scene_cues
+sound_sequence_start hook_stage1_sound_bank
+sound_bank_load hook_stage1_bank_load

@@ -77,7 +77,7 @@ jobs:
       - name: Build game and score checks
         run: |
           set -o pipefail
-          cmake --build build/playable --target ujl ujl_score_test ujl_replay_test ujl_pause_test ujl_asset_test ujl_arcade_test 2>&1 | tee build/playable-build.log
+          cmake --build build/playable --target ujl ujl_score_test ujl_replay_test ujl_pause_test ujl_asset_test ujl_arcade_test ujl_arcade_stage1_test 2>&1 | tee build/playable-build.log
       - name: Report compiler errors
         if: failure()
         run: |
@@ -93,6 +93,7 @@ jobs:
           build/playable/ujl_pause_test$suffix
           ${{ matrix.python }} -I tests/asset_import_test.py build/playable/ujl_asset_test$suffix
           build/playable/ujl_arcade_test$suffix
+          build/playable/ujl_arcade_stage1_test$suffix
       - name: Package game
         run: >-
           ${{ matrix.python }} -I tools/package_build.py ${{ matrix.platform }}

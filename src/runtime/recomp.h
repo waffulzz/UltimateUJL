@@ -42,6 +42,17 @@ extern const int recomp_num_overlays;
 /* ---------------- memory ---------------- */
 #define PSX_RAM_SIZE (2u * 1024u * 1024u)
 extern uint8_t *g_ram;          /* 2MB main RAM */
+/* Host-owned asset storage has guest pointers but consumes no console RAM or native heap.
+   Keep the original RAM mirrors intact; this separate range is for CPU-read asset data. */
+#define HOST_ASSET_BASE 0x01000000u
+#define HOST_ASSET_LIMIT 0x0F000000u
+extern uint8_t *g_asset_ram;
+extern uint32_t g_asset_ram_capacity;
+uint32_t rt_asset_alloc(size_t size);
+void rt_asset_reset(void);
+int rt_asset_contains(uint32_t address, size_t size);
+uint32_t rt_asset_mark(void);
+void rt_asset_rewind(uint32_t mark);
 extern uint8_t g_scratch[1024]; /* D-cache scratchpad 0x1F800000 */
 extern int g_cache_isolated;
 /* debug write-watch (probe only): when armed, stores into [g_watch_lo, g_watch_hi) call rt_watch_hit */
@@ -59,12 +70,14 @@ static inline uint32_t phys_addr(uint32_t a) { return a & 0x1FFFFFFFu; }
 static inline uint32_t mem_r8(uint32_t a) {
     uint32_t p = phys_addr(a);
     if (p < 0x00800000u) return g_ram[p & 0x1FFFFFu];
+    if (p - HOST_ASSET_BASE < g_asset_ram_capacity) return g_asset_ram[p - HOST_ASSET_BASE];
     if ((p & 0xFFFFFC00u) == 0x1F800000u) return g_scratch[p & 0x3FF];
     return mmio_read(p, 1) & 0xFF;
 }
 static inline uint32_t mem_r16(uint32_t a) {
     uint32_t p = phys_addr(a); uint16_t v;
     if (p < 0x00800000u) { memcpy(&v, g_ram + (p & 0x1FFFFEu), 2); return v; }
+    if (p - HOST_ASSET_BASE < g_asset_ram_capacity) { memcpy(&v, g_asset_ram + ((p - HOST_ASSET_BASE) & ~1u), 2); return v; }
     if ((p & 0xFFFFFC00u) == 0x1F800000u) { memcpy(&v, g_scratch + (p & 0x3FE), 2); return v; }
     return mmio_read(p, 2) & 0xFFFF;
 }
@@ -72,6 +85,7 @@ static inline uint32_t mem_r32(uint32_t a) {
     uint32_t p = phys_addr(a), v;
     if ((p & 0x1FFFFCu) - g_rwatch_lo < g_rwatch_hi - g_rwatch_lo && p < 0x00800000u) rt_rwatch_hit(p & 0x1FFFFCu);
     if (p < 0x00800000u) { memcpy(&v, g_ram + (p & 0x1FFFFCu), 4); return v; }
+    if (p - HOST_ASSET_BASE < g_asset_ram_capacity) { memcpy(&v, g_asset_ram + ((p - HOST_ASSET_BASE) & ~3u), 4); return v; }
     if ((p & 0xFFFFFC00u) == 0x1F800000u) { memcpy(&v, g_scratch + (p & 0x3FC), 4); return v; }
     return mmio_read(p, 4);
 }
@@ -80,6 +94,7 @@ static inline void mem_w8(uint32_t a, uint32_t v) {
     if (g_cache_isolated) return;
     WATCH(p & 0x1FFFFFu, v, 1);
     if (p < 0x00800000u) { g_ram[p & 0x1FFFFFu] = (uint8_t)v; return; }
+    if (p - HOST_ASSET_BASE < g_asset_ram_capacity) { g_asset_ram[p - HOST_ASSET_BASE] = (uint8_t)v; return; }
     if ((p & 0xFFFFFC00u) == 0x1F800000u) { g_scratch[p & 0x3FF] = (uint8_t)v; return; }
     mmio_write(p, v & 0xFF, 1);
 }
@@ -88,6 +103,7 @@ static inline void mem_w16(uint32_t a, uint32_t v) {
     if (g_cache_isolated) return;
     WATCH(p & 0x1FFFFEu, v, 2);
     if (p < 0x00800000u) { memcpy(g_ram + (p & 0x1FFFFEu), &h, 2); return; }
+    if (p - HOST_ASSET_BASE < g_asset_ram_capacity) { memcpy(g_asset_ram + ((p - HOST_ASSET_BASE) & ~1u), &h, 2); return; }
     if ((p & 0xFFFFFC00u) == 0x1F800000u) { memcpy(g_scratch + (p & 0x3FE), &h, 2); return; }
     mmio_write(p, h, 2);
 }
@@ -96,12 +112,17 @@ static inline void mem_w32(uint32_t a, uint32_t v) {
     if (g_cache_isolated) return;
     WATCH(p & 0x1FFFFCu, v, 4);
     if (p < 0x00800000u) { memcpy(g_ram + (p & 0x1FFFFCu), &v, 4); return; }
+    if (p - HOST_ASSET_BASE < g_asset_ram_capacity) { memcpy(g_asset_ram + ((p - HOST_ASSET_BASE) & ~3u), &v, 4); return; }
     if ((p & 0xFFFFFC00u) == 0x1F800000u) { memcpy(g_scratch + (p & 0x3FC), &v, 4); return; }
     mmio_write(p, v, 4);
 }
 
-/* host pointer into RAM for a guest address (RAM only) */
-static inline void *ram_ptr(uint32_t a) { return g_ram + (phys_addr(a) & 0x1FFFFFu); }
+/* Resolve guest data pointers, including host-backed assets. */
+static inline void *ram_ptr(uint32_t a) {
+    uint32_t p = phys_addr(a);
+    if (p - HOST_ASSET_BASE < g_asset_ram_capacity) return g_asset_ram + p - HOST_ASSET_BASE;
+    return g_ram + (p & 0x1FFFFFu);
+}
 
 /* unaligned load/store helpers (little endian R3000) */
 static inline uint32_t cpu_lwl(uint32_t rt, uint32_t a) {
@@ -186,6 +207,13 @@ void hook_hiscore_insert(CPU *c, uint32_t fn);
 void hook_menu_screen(CPU *c, uint32_t fn);
 void hook_score_run_finish(CPU *c, uint32_t fn);
 void hook_score_attempt_reset(CPU *c, uint32_t fn);
+void hook_song_attempt_reset(CPU *c, uint32_t fn);
+int filter_stage1_asset_lookup(CPU *c, uint32_t fn);
+void hook_stage1_player_models(CPU *c, uint32_t fn);
+void hook_stage1_scene_cues(CPU *c, uint32_t fn);
+void hook_stage1_sound_bank(CPU *c, uint32_t fn);
+void hook_stage1_bank_load(CPU *c, uint32_t fn);
+void hook_stage1_scene_route(CPU *c, uint32_t fn);
 int filter_replay_directory(CPU *c, uint32_t fn);
 int filter_replay_slots(CPU *c, uint32_t fn);
 int filter_replay_save(CPU *c, uint32_t fn);
