@@ -314,7 +314,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     are removed after completion. Invalid imports can retry after the previous picker has dismissed.
     `ujl_replay_test` verifies this asynchronous exchange with synthetic data. `ujl_ios_picker_test` is an
     isolated simulator app exercising the real UIKit picker/delegate lifecycle and temporary-file handling,
-    with simulated provider completion; CI runs it on an iPhone Duo / iOS 27.2 simulator.
+    with simulated provider completion; CI runs it on an iPhone 18 Pro / iOS 27.2 simulator.
   - Verified: an imported US replay plays from a raw block and .mcs; checksum failure, truncation, missing file
     and cancellation return safely; full-card loading leaves the card byte-for-byte unchanged; Start -> NO
     returns to all candy bars with exactly one file load. Desktop builds and the synthetic smoke test pass
@@ -488,7 +488,9 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
 - **Toolchain**: iOS CI and `tools/build_ios.sh` select Xcode 27.2 and SDK `iphoneos27.2` /
   `iphonesimulator27.2`, with deployment target 15.0. CI uses the hosted `xcode-27` image, explicitly sets
   `DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer`, checks the SDK version and the IPA binary's
-  Mach-O SDK field, and exercises the picker bridge on an iPhone Duo / iOS 27.2 simulator.
+  Mach-O SDK field, and exercises the picker bridge on an iPhone 18 Pro / iOS 27.2 simulator.
+  The Duo simulator stalled during app installation on the hosted image; the user reported the device build
+  working on physical Duo hardware. Automated picker checks therefore use the standard iPhone runtime.
 - **Scene lifecycle**: the shared iOS plist declares `SDLSceneConfiguration` with SDL's existing
   `SDLUIKitSceneDelegate` and a single application scene. Apps linked with the iOS 27 SDK require scene
   lifecycle support; SDL owns the scene window and forwards its size changes to the renderer/input path.

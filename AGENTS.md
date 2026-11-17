@@ -77,7 +77,7 @@ Verification primarily means running the game headless or scripted and inspectin
 `ujl_score_test` target checks score traces/native HUD primitives using synthetic RAM (no disc needed):
 `cmake --build build/cmake --target ujl_score_test`, then `build/cmake/ujl_score_test.exe build`.
 `ujl_replay_test` similarly checks asynchronous replay export/import with synthetic data. The iOS simulator-only
-`ujl_ios_picker_test` app checks native UIKit picker lifetimes; CI boots an iPhone Duo with iOS 27.2 to run it.
+`ujl_ios_picker_test` app checks native UIKit picker lifetimes; CI boots an iPhone 18 Pro with iOS 27.2 to run it.
 
 - **CI smoke test** (`tests/smoke/smoke.py`, run by `.github/workflows/ci.yml` on Windows, Linux and macOS). CI has no
   disc, so it assembles a small synthetic PS-X EXE onto a generated ISO image, recompiles it with `gen.py`, builds

@@ -151,12 +151,12 @@ jobs:
         if: failure() && matrix.sdk == 'iphonesimulator'
         run: |
           grep -E "error:|undefined reference|ld: " build/picker-build.log | head -20 | sed 's/^/::error::/' || true
-      - name: Boot iPhone Duo (iOS 27.2)
+      - name: Boot iPhone 18 Pro (iOS 27.2)
         if: matrix.sdk == 'iphonesimulator'
         timeout-minutes: 10
         run: |
-          runtime=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(k for k,v in d["devices"].items() if "iOS-27-2" in k and any(x["name"] == "iPhone Duo" for x in v)))')
-          device=$(xcrun simctl create UJLPickerTest 'iPhone Duo' "$runtime")
+          runtime=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(k for k,v in d["devices"].items() if "iOS-27-2" in k and any(x["name"] == "iPhone 18 Pro" for x in v)))')
+          device=$(xcrun simctl create UJLPickerTest 'iPhone 18 Pro' "$runtime")
           echo "UJL_TEST_DEVICE=$device" >> "$GITHUB_ENV"
           xcrun simctl boot "$device" || true
           xcrun simctl bootstatus "$device" -b
