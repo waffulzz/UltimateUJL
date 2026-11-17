@@ -198,6 +198,8 @@ jobs:
           tail -20 build/picker-host.log | sed 's/^/::error::/'
       - name: Shut down test simulator
         if: always() && matrix.sdk == 'iphonesimulator' && env.UJL_TEST_DEVICE != ''
+        # The hosted VM is discarded after the job. Slow simulator teardown must not fail passing tests.
+        continue-on-error: true
         timeout-minutes: 1
         run: |
           xcrun simctl shutdown "$UJL_TEST_DEVICE" || true
