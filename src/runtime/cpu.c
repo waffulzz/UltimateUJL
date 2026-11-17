@@ -1,5 +1,6 @@
 /* COP0, syscalls, indirect dispatch, safepoints, clock. */
 #include "psx.h"
+#include "pause.h"
 #include <stdlib.h>
 #include <string.h>
 #include <SDL3/SDL.h>
@@ -237,6 +238,7 @@ static void turbo_advance(uint64_t to) {
 }
 
 static void clock_update(int idle) {
+    host_t0 += rt_pause_wait(); /* no catch-up frames, CD sectors or notes after resuming */
     if (g_now < g_load_turbo_until) {
         uint64_t next = sched_next();
         if (idle && next != UINT64_MAX) turbo_advance(next);

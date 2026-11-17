@@ -28,6 +28,7 @@ struct Face { int bit; float ox, oy; };
 const Face k_face[4] = {{B_TRIANGLE, 0, -1}, {B_CIRCLE, 1, 0}, {B_CROSS, 0, 1}, {B_SQUARE, -1, 0}};
 
 bool g_pad_on, g_menu_on, g_menu_tap;
+const char *g_start_label = "START";
 uint64_t g_menu_until;                   // pad hidden: the menu button shows until then (ms) after a touch
 struct Finger { float x, y; bool menu; };
 std::map<SDL_FingerID, Finger> g_fingers;
@@ -51,7 +52,7 @@ void layout(float w, float h, TouchRect s) {
     L.pill[P_R2] = {B_R2, rx, s.y0 + sh * 0.165f, shw, shh, "R2"};
     L.pill[P_R1] = {B_R1, rx, s.y0 + sh * 0.275f, shw, shh, "R1"};
     L.pill[P_SELECT] = {B_SELECT, lx, s.y0 + sh * 0.91f, col * 0.3f, shh * 0.85f, "SELECT"};
-    L.pill[P_START] = {B_START, rx, s.y0 + sh * 0.91f, col * 0.3f, shh * 0.85f, "START"};
+    L.pill[P_START] = {B_START, rx, s.y0 + sh * 0.91f, col * 0.3f, shh * 0.85f, g_start_label};
     L.mx = lx; L.my = s.y0 + sh * 0.055f; L.mhw = col * 0.2f; L.mhh = sh * 0.036f;
     L.free_r = {s.x0 + col, 0, s.x1 - col, h};
 }
@@ -109,6 +110,7 @@ void touchpad_update(float w, float h, TouchRect safe, bool pad_on, bool menu_on
 }
 
 bool touchpad_visible() { return g_pad_on; }
+void touchpad_start_label(const char *label) { g_start_label = label; }
 
 bool touchpad_event(const SDL_Event &e) {
     if (e.type != SDL_EVENT_FINGER_DOWN && e.type != SDL_EVENT_FINGER_MOTION && e.type != SDL_EVENT_FINGER_UP &&

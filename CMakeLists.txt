@@ -50,6 +50,7 @@ target_compile_options(recomp PRIVATE -w -O2 -fno-strict-aliasing)
 set(RUNTIME_SOURCES
   src/runtime/mem.c
   src/runtime/cpu.c
+  src/runtime/pause.c
   src/runtime/bios.c
   src/runtime/gte.c
   src/runtime/gpu.c
@@ -96,6 +97,10 @@ if(NOT UJL_IOS)
   target_link_libraries(ujl_replay_test PRIVATE SDL3::SDL3-static)
   target_compile_definitions(ujl_replay_test PRIVATE UJL_REPLAY_FILES=1)
   target_compile_options(ujl_replay_test PRIVATE -UNDEBUG)
+  add_executable(ujl_pause_test EXCLUDE_FROM_ALL tests/pause_test.cpp src/frontend/pause_menu.cpp src/runtime/pause.c)
+  target_include_directories(ujl_pause_test PRIVATE src/runtime src/frontend)
+  target_link_libraries(ujl_pause_test PRIVATE SDL3::SDL3-static)
+  target_compile_options(ujl_pause_test PRIVATE -UNDEBUG)
 endif()
 
 # Dear ImGui (vendored)
@@ -109,7 +114,7 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
 
 # The game
 set(UJL_FRONTEND_SOURCES src/frontend/main.cpp src/frontend/discs.cpp src/frontend/gl_funcs.cpp src/frontend/hw_renderer.cpp
-  src/frontend/touch_pad.cpp)
+  src/frontend/touch_pad.cpp src/frontend/pause_menu.cpp)
 if(UJL_IOS)
   # OpenGL ES 3.0 (UIKit EAGL via SDL), the same renderer with GLSL ES shaders (hw_renderer.cpp picks them at run time)
   set(UJL_IOS_BUNDLE_ID "io.github.waffulzz.UltimateUJL" CACHE STRING "iOS bundle identifier")

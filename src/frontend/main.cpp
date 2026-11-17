@@ -22,6 +22,8 @@
 #include "discs.h"
 #include "platform.h"
 #include "touch_pad.h"
+#include "pause_menu.h"
+#include "pause.h"
 
 extern "C" {
 #include "psx.h"
@@ -65,6 +67,18 @@ static bool g_show_vram;
 // shown by the software renderer and for 24-bit movie frames. Converting it every vblank anyway cost the game
 // thread ~5% on an iPhone 16 Pro.
 static std::atomic<bool> g_need_native{true};
+static std::atomic<bool> g_pause_available{false};
+static std::atomic<int> g_again_request{0};
+static PauseMenu g_pause_menu;
+static bool g_pause_font_captured;
+
+static bool pause_song_context() {
+    const char *ov = rt_current_overlay_name();
+    size_t n = ov ? strlen(ov) : 0;
+    if (n < 4 || (strcmp(ov + n - 4, ".SNG") && strcmp(ov + n - 4, ".CMP") && strcmp(ov + n - 4, ".COP"))) return false;
+    unsigned stage = mem_r32(0x80078ae0);
+    return stage >= 1 && stage <= 7 && mem_r32(0x80071dd0) != 2 && !(mem_r32(0x80071dd4) & 8);
+}
 
 // ---------------------------------------------------------------- dev automation (UJL_SCRIPT)
 // UJL_SCRIPT=file with lines "<seconds> <button>|shot|overlay|quit" drives the game for renderer tests: buttons are
@@ -77,6 +91,8 @@ static std::vector<ScriptEv> g_script;
 static std::atomic<int> g_shot_req{-1};
 static std::atomic<bool> g_script_quit{false};
 static std::atomic<int> g_script_overlay{0};   // pending settings-overlay toggles
+static std::atomic<uint16_t> g_script_held{0};
+static std::atomic<int> g_script_pause_ms{0}, g_script_pause_again{0};
 static uint16_t script_btn(const char *n) {
     static const char *names[] = {"select","l3","r3","start","up","right","down","left","l2","r2","l1","r1","triangle","circle","cross","square"};
     for (int i = 0; i < 16; i++) if (!strcmp(n, names[i])) return (uint16_t)(1u << i);
@@ -96,6 +112,8 @@ static bool script_load(const char *path) {
                 for (int i = 0; i < n; i++) g_script.push_back({vb + i, 1, 0});
             else if (!strcmp(name, "quit")) g_script.push_back({vb, 2, 0});
             else if (!strcmp(name, "overlay")) g_script.push_back({vb, 3, 0});
+            else if ((!strcmp(name, "pause") || !strcmp(name, "pause-again")) && sscanf(line, "%*f %*s %d", &n) == 1)
+                g_script.push_back({vb, !strcmp(name, "pause-again") ? 5 : 4, (uint16_t)std::clamp(n, 1, 30)});
             else if (uint16_t b = script_btn(name)) g_script.push_back({vb, 0, b});
         }
     fclose(f);
@@ -109,6 +127,10 @@ static uint16_t script_vblank(int vb) {
         else if (e.kind == 1 && vb == e.vblank) g_shot_req = vb;
         else if (e.kind == 2 && vb == e.vblank) g_script_quit = true;
         else if (e.kind == 3 && vb == e.vblank) g_script_overlay++;
+        else if ((e.kind == 4 || e.kind == 5) && vb == e.vblank) {
+            g_script_pause_again = e.kind == 5;
+            g_script_pause_ms = (int)e.bit * 1000;
+        }
     }
     return held;
 }
@@ -143,8 +165,12 @@ static inline uint32_t c15_to_rgba(uint16_t c) {
 extern "C" void host_vblank(void) {
     int vb = ++g_vblanks;
     gpu_rec_vblank();
+    g_pause_available = pause_song_context();
+    if (!g_script.empty()) g_script_held = script_vblank(vb);
     g_pad_buttons[0] = g_input_buttons.load();
-    if (!g_script.empty()) g_pad_buttons[0] &= (uint16_t)~script_vblank(vb);
+    static int again_frames;
+    if (g_again_request.exchange(0) && pause_song_context()) again_frames = 6;
+    if (again_frames) { g_pad_buttons[0] &= (uint16_t)~(1u << B_START); again_frames--; }
     const GpuDisplay &d = g_gpu_display;
     int w = d.hres, h = d.vres;
     if (w <= 0 || h <= 0) return;
@@ -177,6 +203,27 @@ extern "C" void host_vblank(void) {
 // ---------------------------------------------------------------- audio
 static SDL_AudioStream *g_audio;
 static std::atomic<int> g_volume{100};
+
+static void sync_pause_audio() {
+    if (!g_audio) return;
+    bool pause = rt_pause_requested() != 0;
+    if (pause && !SDL_AudioStreamDevicePaused(g_audio)) SDL_PauseAudioStreamDevice(g_audio);
+    else if (!pause && SDL_AudioStreamDevicePaused(g_audio)) SDL_ResumeAudioStreamDevice(g_audio);
+}
+static void pause_action(PauseAction action) {
+    if (action == PauseAction::None) return;
+    if (action == PauseAction::Open) {
+        g_pause_font_captured = false;
+        rt_pause_set(RT_PAUSE_USER, 1);
+        fprintf(stderr, "pause: requested at vblank %d\n", g_vblanks.load());
+    } else if (action == PauseAction::Resume || action == PauseAction::Again) {
+        if (action == PauseAction::Again) g_again_request = 1;
+        g_input_buttons = 0xffff;
+        rt_pause_set(RT_PAUSE_USER, 0);
+        fprintf(stderr, "pause: %s at vblank %d\n", action == PauseAction::Again ? "AGAIN?" : "resume", g_vblanks.load());
+    } else if (action == PauseAction::Settings) g_set.show_overlay = true;
+    sync_pause_audio();
+}
 
 /* Output pacing. The SPU makes samples on the emulated clock, which follows the host clock, but arrives in bursts
    when the game thread was held up (it waits for a slow renderer in gpu_rec_vblank, then catches up). Aim for
@@ -505,6 +552,8 @@ static void app_lifecycle_event(const SDL_Event &e) {
     switch (e.type) {
     case SDL_EVENT_WILL_ENTER_BACKGROUND:
         if (!g_app_background.exchange(true)) {
+            rt_pause_set(RT_PAUSE_BACKGROUND, 1);
+            sync_pause_audio();
             glFinish();   // let submitted GPU work complete while that is still allowed
             memcard_flush();
         }
@@ -513,6 +562,8 @@ static void app_lifecycle_event(const SDL_Event &e) {
         memcard_flush();
         break;
     case SDL_EVENT_DID_ENTER_FOREGROUND:
+        rt_pause_set(RT_PAUSE_BACKGROUND, 0);
+        sync_pause_audio();
         g_app_background = false;
         break;
     default: break;
@@ -863,6 +914,7 @@ int main(int argc, char **argv) {
     g_cd_fast_load = ini_get("fast_load", "0") == "1";
     if (!g_script.empty()) {
         if (const char *a = getenv("UJL_SCRIPT_ASPECT")) g_set.aspect = std::max(0, std::min(5, atoi(a)));
+        if (const char *r = getenv("UJL_SCRIPT_RENDERER")) g_set.renderer = atoi(r) != 0;
         if (getenv("UJL_SCRIPT_UNLOCK")) g_unlock_all = 1;
     }
     if (!hw_ok) { g_set.renderer = 0; fprintf(stderr, "hw: unavailable, using the software renderer\n"); }
@@ -874,6 +926,9 @@ int main(int argc, char **argv) {
     (void)gt;
 
     GLuint tex_frame = make_tex(640, 480), tex_vram = make_tex(1024, 512);
+    GLuint tex_pause = make_tex(PauseMenu::width, PauseMenu::height);
+    HwView pause_view{};
+    bool pause_view_valid = false;
     int tex_w = 640, tex_h = 480;
     {
         int n = 0;
@@ -901,6 +956,11 @@ int main(int argc, char **argv) {
     uint64_t tstage[T_N] = {}, tmark = SDL_GetTicksNS(), tframe0 = tmark;
     auto stage = [&](int i) { uint64_t t = SDL_GetTicksNS(); tstage[i] += t - tmark; tmark = t; };
     static const bool fps_stats_env = getenv("UJL_FPS_STATS") != nullptr;
+    struct {
+        bool waiting = false, checking = false, again = false, failed = false, resized = false;
+        int duration = 0, vb = 0, score = 0, song = 0, raw_song = 0, queued = 0;
+        uint64_t until = 0, cycles = 0, resize_shot_at = 0;
+    } pause_test;
     while (running) {
         {   // report the previous frame if it was a hitch
             uint64_t t = SDL_GetTicksNS(), total = t - tframe0;
@@ -929,7 +989,12 @@ int main(int argc, char **argv) {
                 wizard_drop_file(e.drop.data);
             }
             if (e.type == SDL_EVENT_KEY_DOWN && !e.key.repeat) {
-                if (e.key.key == SDLK_F1 || e.key.key == SDLK_ESCAPE) g_set.show_overlay = !g_set.show_overlay;
+                if (e.key.key == SDLK_F1) g_set.show_overlay = !g_set.show_overlay;
+                if (e.key.key == SDLK_ESCAPE) {
+                    if (g_set.show_overlay) g_set.show_overlay = false;
+                    else if (g_pause_available || g_pause_menu.visible) pause_action(g_pause_menu.toggle(0));
+                    else g_set.show_overlay = true;
+                }
                 if (e.key.key == SDLK_F2) g_show_vram = !g_show_vram;
                 if (e.key.key == SDLK_F11) {
                     bool fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN;
@@ -937,7 +1002,47 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        g_input_buttons = (uint16_t)(poll_buttons(!ImGui::GetIO().WantCaptureKeyboard) & ~touchpad_held());
+        uint16_t touch_held = touchpad_held();
+        uint16_t held = (uint16_t)(~poll_buttons(true) | touch_held | g_script_held.load());
+        pause_action(g_pause_menu.input(held, g_pause_available, g_confirm_cross != 0, g_set.show_overlay));
+        uint16_t game_held = (uint16_t)(~poll_buttons(!ImGui::GetIO().WantCaptureKeyboard) | touch_held | g_script_held.load());
+        g_input_buttons = (uint16_t)~g_pause_menu.game_buttons(game_held);
+        if (int ms = g_script_pause_ms.exchange(0); ms > 0) {
+            if (!g_pause_available || g_pause_menu.visible) { pause_test.failed = true; fprintf(stderr, "pause-check: unavailable\n"); }
+            else {
+                pause_test.waiting = true; pause_test.duration = ms; pause_test.again = g_script_pause_again.exchange(0);
+                pause_action(g_pause_menu.toggle(held)); g_input_buttons = 0xffff;
+            }
+        }
+        if (pause_test.waiting && rt_pause_active()) {
+            pause_test.waiting = false; pause_test.checking = true;
+            pause_test.vb = g_vblanks.load(); pause_test.cycles = g_now;
+            pause_test.song = (int)mem_r32(0x80078af8); pause_test.raw_song = (int)mem_r32(0x801a2360);
+            pause_test.score = (int)mem_r16(0x80071dbc);
+            pause_test.queued = g_audio ? SDL_GetAudioStreamQueued(g_audio) : 0;
+            pause_test.until = SDL_GetTicks() + pause_test.duration;
+        }
+        if (pause_test.checking && SDL_GetTicks() >= pause_test.until) {
+            bool stable = rt_pause_active() && pause_test.vb == g_vblanks.load() && pause_test.cycles == g_now &&
+                pause_test.song == (int)mem_r32(0x80078af8) && pause_test.raw_song == (int)mem_r32(0x801a2360) &&
+                pause_test.score == (int)mem_r16(0x80071dbc) &&
+                (!g_audio || (SDL_AudioStreamDevicePaused(g_audio) && pause_test.queued == SDL_GetAudioStreamQueued(g_audio)));
+            fprintf(stderr, "pause-check: %d ms, vblank %d, song %d, frozen=%d\n", pause_test.duration, pause_test.vb, pause_test.song, stable);
+            pause_test.failed |= !stable; pause_test.checking = false;
+            pause_action(g_pause_menu.choose(pause_test.again ? 1 : 0, held));
+        }
+        if (pause_test.checking && !pause_test.resized && SDL_GetTicks() + pause_test.duration / 2 >= pause_test.until) {
+            if (const char *size = getenv("UJL_SCRIPT_PAUSE_RESIZE")) {
+                int rw = 0, rh = 0;
+                if (sscanf(size, "%dx%d", &rw, &rh) == 2 && rw >= 320 && rh >= 240) {
+                    SDL_SetWindowSize(win, rw, rh); pause_test.resized = true;
+                    pause_test.resize_shot_at = SDL_GetTicks() + 700;
+                }
+            }
+        }
+        if (pause_test.checking && pause_test.resize_shot_at && SDL_GetTicks() >= pause_test.resize_shot_at) {
+            g_shot_req = pause_test.vb; pause_test.resize_shot_at = 0;
+        }
         stage(T_EVENTS);
         if (touchpad_take_menu()) {
             g_set.show_overlay = !g_set.show_overlay;
@@ -947,6 +1052,23 @@ int main(int argc, char **argv) {
 #if UJL_REPLAY_FILES
         replay_dialog_tick(win);
 #endif
+
+        // Keep an independent picture: resolution/aspect changes and a Duo resize can recreate renderer targets
+        // while the guest is parked. Its frozen frame must survive those changes.
+        if (g_pause_menu.visible && rt_pause_active() && !g_pause_font_captured) {
+            if (pause_view.tex) glDeleteTextures(1, &pause_view.tex);
+            pause_view = {};
+            pause_view_valid = g_set.renderer == 1 && hw_have_frame && hw_capture_view(hw_disp, &pause_view);
+            if (!pause_view_valid) {
+                SDL_LockMutex(g_frame_mtx);
+                pause_view.tex = make_tex(g_frame_w, g_frame_h);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, g_frame_w, g_frame_h, GL_RGBA, GL_UNSIGNED_BYTE, g_frame_rgba.data());
+                SDL_UnlockMutex(g_frame_mtx);
+                pause_view.u1 = pause_view.v1 = 1; pause_view.aspect = 4.0f / 3.0f;
+                pause_view_valid = true;
+            }
+        }
+        if (!g_pause_menu.visible) pause_view_valid = false;
 
         {
             int fw, fh;
@@ -963,6 +1085,7 @@ int main(int argc, char **argv) {
             if (!SDL_GetWindowSafeArea(win, &sa) || sa.w <= 0 || sa.h <= 0) sa = SDL_Rect{0, 0, ww, wh};
             bool pad_on = (g_set.touch == TOUCH_ALWAYS || (g_set.touch == TOUCH_AUTO && g_pads.empty())) &&
                           !g_set.show_overlay && !wizard_active();
+            touchpad_start_label(g_pause_menu.visible ? "RESUME" : g_pause_available ? "PAUSE" : "START");
             touchpad_update((float)ww, (float)wh, TouchRect{(float)sa.x, (float)sa.y, (float)(sa.x + sa.w), (float)(sa.y + sa.h)},
                             pad_on, (UJL_IOS || g_set.touch != TOUCH_NEVER) && !g_set.show_overlay && !wizard_active());
         }
@@ -991,9 +1114,11 @@ int main(int argc, char **argv) {
         if (g_set.renderer == 1) {
             int sc = want_scale();
             if (sc != hw_scale()) { hw_set_scale(sc); gpu_rec_request_resync(); hw_have_frame = false; }
-            const uint8_t *cmds;
-            size_t n = gpu_rec_take(&cmds);
-            if (n && hw_replay(cmds, n, &hw_disp)) hw_have_frame = true;
+            if (!rt_pause_active()) { // drain until the guest parks; retain the exact framebuffer while it is paused
+                const uint8_t *cmds;
+                size_t n = gpu_rec_take(&cmds);
+                if (n && hw_replay(cmds, n, &hw_disp)) hw_have_frame = true;
+            }
         }
         gl_check_main("replay");
         stage(T_REPLAY);
@@ -1090,6 +1215,7 @@ int main(int argc, char **argv) {
                 last_wide = wide_view;
             }
         }
+        if (pause_view_valid) { view = pause_view; use_hw = true; }
         float aspect = use_hw ? view.aspect : 4.0f / 3.0f;
         float w = ds.x, h = ds.x / aspect;
         if (h > ds.y) { h = ds.y; w = h * aspect; }
@@ -1105,11 +1231,39 @@ int main(int argc, char **argv) {
             ui1.y = std::min({ui1.y, (float)(sa.y + sa.h), fr.y1});
             if (ui1.x <= ui0.x || ui1.y <= ui0.y) { ui0 = ImVec2(0, 0); ui1 = ds; }
         }
-        if (use_hw && hw_disp.enabled) {
+        if (use_hw && (pause_view_valid || hw_disp.enabled)) {
             ImGui::GetBackgroundDrawList()->AddImage((ImTextureID)(intptr_t)view.tex, p0, ImVec2(p0.x + w, p0.y + h),
                                                      ImVec2(view.u0, view.v0), ImVec2(view.u1, view.v1));
         } else if (!use_hw) {
             ImGui::GetBackgroundDrawList()->AddImage((ImTextureID)(intptr_t)tex_frame, p0, ImVec2(p0.x + w, p0.y + h));
+        }
+
+        if (g_pause_menu.visible && rt_pause_active()) {
+            bool first = !g_pause_font_captured;
+            if (first) { g_pause_menu.capture_font(g_ram, g_vram); g_pause_font_captured = true; }
+            float scale = std::min({h / 240.0f, (ui1.x - ui0.x) / (PauseMenu::width + 12),
+                (ui1.y - ui0.y) / (PauseMenu::height + 12)});
+            ImVec2 a((ui0.x + ui1.x - PauseMenu::width * scale) * 0.5f, (ui0.y + ui1.y - PauseMenu::height * scale) * 0.5f);
+            ImVec2 b(a.x + PauseMenu::width * scale, a.y + PauseMenu::height * scale);
+            if (!g_set.show_overlay && scale > 0) {
+                ImGuiIO &io = ImGui::GetIO();
+                int row = PauseMenu::hit((io.MousePos.x - a.x) / scale, (io.MousePos.y - a.y) / scale);
+                static int pressed_row = -1;
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) pressed_row = row;
+                if (row >= 0 && (io.MouseDelta.x || io.MouseDelta.y)) g_pause_menu.selection = row;
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                    if (row >= 0 && row == pressed_row) pause_action(g_pause_menu.choose(row, held));
+                    pressed_row = -1;
+                }
+            }
+            std::vector<uint32_t> pixels;
+            g_pause_menu.rasterize(pixels);
+            glBindTexture(GL_TEXTURE_2D, tex_pause);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, PauseMenu::width, PauseMenu::height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+            auto *dl = ImGui::GetBackgroundDrawList();
+            dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h), IM_COL32(0, 0, 0, 128));
+            dl->AddImage((ImTextureID)(intptr_t)tex_pause, a, b);
+            if (first && !g_script.empty()) g_shot_req = g_vblanks.load();
         }
 
         if (g_set.show_overlay) {
@@ -1492,5 +1646,5 @@ int main(int argc, char **argv) {
     // (the game thread never touches the window or GL) and leave the process; exit releases the rest.
     SDL_GL_DestroyContext(gl);
     SDL_DestroyWindow(win);
-    _Exit(0);
+    _Exit(pause_test.failed ? 1 : 0);
 }

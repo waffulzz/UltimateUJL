@@ -26,6 +26,7 @@ struct TouchRect { float x0, y0, x1, y1; };
 // menu button still appears for a few seconds after the screen is touched.
 void touchpad_update(float w, float h, TouchRect safe, bool pad_on, bool menu_on);
 bool touchpad_visible();
+void touchpad_start_label(const char *label); // static text: START in menus, PAUSE/RESUME in songs
 // Feed every SDL event. True = a finger event the pad used.
 bool touchpad_event(const SDL_Event &e);
 uint16_t touchpad_held();           // buttons held (1 << B_x)

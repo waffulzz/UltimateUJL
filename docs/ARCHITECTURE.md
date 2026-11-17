@@ -41,8 +41,7 @@ With the USA disc imported (first-run setup wizard, Settings > Discs): English t
 memory card messages and credits song, plus the option to switch Stages 1, 5 and 6 to the censored USA versions
 ("Uncensored content", on by default). Also: instant loading, unlock-all, confirm with Cross, Autoplay and
 Auto-COOL (watermarked, kept out of the high scores).
-Open: SPU noise, the credits-screen line (user report, not reproduced), the arcade (UJL NOW!) features, pause
-screen; see To do.
+Open: SPU noise, the credits-screen line (user report, not reproduced), the arcade (UJL NOW!) features; see To do.
 Probe: `ujl_probe.exe -t SECS -shot -wav -press T:BTN ...` → build/shots/tNNN.bmp, audio.wav.
 
 Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmake -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ && cmake --build build/cmake`
@@ -484,6 +483,31 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   song's last channel-7 sector: the cue is one-shot, and left alone the CD streams on into the next file. Probe:
   hold at ~136 s, fade at ~198 s, Stage Select at ~201 s.
 
+## Host pause (2026-11-16)
+- During live songs and replays (SNG/CMP/COP, stages 1–7, excluding attract and ended attempts), Start opens a
+  port-owned pause menu; menus retain their original Start behavior. Escape also pauses/resumes during a song.
+  Select still cycles guitar effects. Resume returns to the exact attempt; AGAIN? resumes and injects a six-vblank
+  native Start press, opening the original retry/quit prompt with the existing Circle/Cross setting. Settings
+  opens the port settings while keeping the song paused; closing Settings returns to the pause menu.
+- `runtime/pause.c` parks the current guest baton owner at `clock_update`, stopping the scheduler, SPU, CD song
+  clock and all other guest threads together. The elapsed host time is added to `host_t0` before clock updates
+  resume. Pausing presentation alone would continue the song or cause catch-up on resume. The SDL audio device
+  pauses with its queue intact, preserving its existing latency and position. Manual and iOS background pause
+  reasons compose, so foregrounding cannot accidentally resume a manually paused attempt.
+- `frontend/pause_menu.cpp` draws native-sized lettering from the JP executable's 10-byte glyph metrics at
+  `80063c98` and the resident LETTER_E font (VRAM 960,385; CLUT 1008,475). RAM/VRAM are copied only after the
+  guest acknowledges suspension. No font bitmap is shipped. The panel is a plain image using that lettering,
+  with controller, keyboard, mouse and touch navigation. Input held at resume is quarantined until released,
+  preventing a confirmation from becoming an unintended note. Touch Start reads PAUSE/RESUME in songs.
+- The hardware renderer makes an independent resolved-frame copy (`hw_capture_view`) before settings/resizing
+  can recreate its VRAM or wide targets. Software presentation copies the last native frame instead. The frozen
+  picture retains its aspect, and the panel fits the safe area in native proportions on wide and mobile screens.
+- Verification: `ujl_pause_test` checks actual host-thread parking, nested manual/background reasons, menu
+  navigation and release quarantine. Scripted Stage 1 checks keep vblank count, virtual cycles, both song clocks,
+  score and queued audio unchanged through two-second pauses, then resume and open/answer the native AGAIN?
+  prompt. Script commands `pause N` and `pause-again N` use host seconds so they can resume while guest time is
+  stopped. `UJL_SCRIPT_PAUSE_RESIZE=WxH` resizes halfway through the first pause for renderer checks.
+
 ## iOS / iPadOS (2026-11-16)
 - **Toolchain**: iOS CI and `tools/build_ios.sh` select Xcode 27.2 and SDK `iphoneos27.2` /
   `iphonesimulator27.2`, with deployment target 15.0. CI uses the hosted `xcode-27` image, explicitly sets
@@ -788,8 +812,6 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     end-of-file sector repeats past its end, and the /S6 directory record reports the USA size. Not yet watched in
     game (the probe's menu timing kept landing in the attract loop instead of Stage 6 story).
 - Stage 1 versus/PaRappa restoration, UJL NOW! Joe Chin cutscenes.
-- A real pause screen, separate from the "AGAIN?" prompt (the JP game reuses AGAIN? when Start is pressed
-  mid-song): resume / retry / quit / settings, drawn by the port.
 - Setting: play the UJL NOW! arcade attract movies (arcade CD MOVIE/*.IKI) in the attract loop (needs the
   arcade CD image; off/absent = console attract).
 - Uncapped framerate: the game logic stays at its native tick. Rendering above 60 fps needs interpolation

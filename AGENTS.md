@@ -78,6 +78,7 @@ Verification primarily means running the game headless or scripted and inspectin
 `cmake --build build/cmake --target ujl_score_test`, then `build/cmake/ujl_score_test.exe build`.
 `ujl_replay_test` similarly checks asynchronous replay export/import with synthetic data. The iOS simulator-only
 `ujl_ios_picker_test` app checks native UIKit picker lifetimes; CI boots an iPhone 18 Pro with iOS 27.2 to run it.
+`ujl_pause_test` checks guest suspension, nested pause reasons, navigation and held-button quarantine.
 
 - **CI smoke test** (`tests/smoke/smoke.py`, run by `.github/workflows/ci.yml` on Windows, Linux and macOS). CI has no
   disc, so it assembles a small synthetic PS-X EXE onto a generated ISO image, recompiles it with `gen.py`, builds
@@ -115,6 +116,10 @@ Verification primarily means running the game headless or scripted and inspectin
   Shots go to `build/cmake/shots/hw_vNNNNN.bmp`. Related variables: `UJL_SCRIPT_ASPECT` (0 4:3 … 3 21:9, 5 auto),
   `UJL_SCRIPT_UNLOCK=1`, `UJL_SCRIPT_CARD`, `UJL_SCRIPT_HIDDEN=WxH`. Confirm-with-Cross is on by default, so menus take
   `cross`.
+  `pause N` / `pause-again N` pause a song for N host seconds, verify its clocks/score/audio queue are frozen,
+  then resume / open the original AGAIN? prompt. `UJL_SCRIPT_PAUSE_RESIZE=WxH` resizes during the first pause;
+  `UJL_SCRIPT_RENDERER=0/1` selects software/hardware without saving settings. Start (Enter) pauses in songs;
+  Select (Backspace) retains guitar effects; Escape also pauses or closes settings.
 - Runtime stats/A-B switches (all env vars): `UJL_CD_STATS`, `UJL_FLIP_STATS`, `UJL_FPS_STATS`, `UJL_AUDIO_STATS`, `UJL_GTE_STATS`, `UJL_SUBPIX_STATS`,
   `UJL_WAIT_STATS`, `UJL_FAST_LOAD`, `UJL_SOFT_RASTER`, `UJL_FORCE_RATING`, `UJL_FORCE_SCENE` (8,3 = staff roll from Stage 1), `UJL_NCLIP_INT` (integer-only backface test), and
   `UJL_JP_*` to disable each English patch. `UJL_GL_CHECK=1` names the step behind any GL error, `UJL_TOUCH_LOG=1`

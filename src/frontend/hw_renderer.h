@@ -27,3 +27,4 @@ void hw_set_log(int on);                   // log widescreen events ("wide:" lin
 void hw_set_widescreen(float aspect, bool stretch_ui);
 struct HwView { unsigned tex; float u0, v0, u1, v1; float aspect; };
 bool hw_view(const GpuDisplay &d, HwView *v);  // what to show for this display state (true = wide twin)              // GL texture name of the upscaled VRAM (row 0 = VRAM y 0)
+bool hw_capture_view(const GpuDisplay &d, HwView *v); // independent frozen image; caller owns v->tex

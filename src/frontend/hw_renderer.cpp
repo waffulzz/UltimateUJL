@@ -1328,6 +1328,30 @@ bool hw_view(const GpuDisplay &d, HwView *v) {
     return false;
 }
 
+bool hw_capture_view(const GpuDisplay &d, HwView *v) {
+    if (!fbo_disp || !d.enabled || d.depth24) return false;
+    GLuint source = fbo_disp;
+    int x = d.disp_x * S, y = d.disp_y * S, w = d.hres * S, h = d.vres * S;
+    float aspect = 4.0f / 3.0f;
+    for (const Wide &W : wide)
+        if (W.tex_disp && g_wide_k < 0.999f && W.x == d.disp_x && W.y == d.disp_y && W.h == d.vres) {
+            source = W.fbo_disp; x = y = 0; w = W.pw; h = W.ph; aspect /= g_wide_k; break;
+        }
+    GlState st;
+    save_state(st);
+    glDisable(GL_SCISSOR_TEST);
+    GLuint target = 0, texture = make_target(&target, w, h, GL_LINEAR);
+    // Display textures use PS1 bit 15 as stored alpha; the presented picture is opaque regardless of that bit.
+    glTexParameteri(GL_TEXTURE_2D, 0x8E45 /* GL_TEXTURE_SWIZZLE_A */, GL_ONE);
+    GLF(BindFramebuffer)(GL_READ_FRAMEBUFFER, source);
+    GLF(BindFramebuffer)(GL_DRAW_FRAMEBUFFER, target);
+    GLF(BlitFramebuffer)(x, y, x + w, y + h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    GLF(DeleteFramebuffers)(1, &target);
+    restore_state(st);
+    *v = HwView{texture, 0, 0, 1, 1, aspect};
+    return true;
+}
+
 bool hw_replay(const uint8_t *data, size_t len, GpuDisplay *disp) {
     if (!len) return false;
     uint64_t t0 = SDL_GetPerformanceCounter();
