@@ -1,6 +1,7 @@
 /* SPU: 24 ADPCM voices with ADSR, CD/XA input, mixed at 44.1 kHz on emulated time.
    Written from the public hardware description. Noise is TODO. */
 #include "psx.h"
+#include "arcade_audio.h"
 #include <stdlib.h>
 
 #define SPU_RATE 44100
@@ -127,6 +128,7 @@ static void key_on(int n) {
              REG(0x180), REG(0x182), REG(0x1AA), REG(0x19A), REG(0x198), REG(0x196), REG(0x194), REG(0x192), REG(0x190));
     }
     vc->addr = (uint32_t)REG(n * 16 + 6) << 3;
+    arcade_audio_key_on(n, g_spu_ram, vc->addr);
     if (!vc->repeat_set) vc->repeat = vc->addr;
     vc->counter = 0;
     vc->h1 = vc->h2 = 0;
@@ -156,6 +158,7 @@ static int32_t voice_sample(int n) {
     int frac = (int)(vc->counter & 0xFFF);
     int32_t s0 = vc->buf[idx], s1 = idx + 1 < 28 ? vc->buf[idx + 1] : s0;
     int32_t out = s0 + (((s1 - s0) * frac) >> 12);
+    out = arcade_audio_sample(n, vc->addr, vc->counter, out);
     uint32_t pitch = REG(n * 16 + 4);
     if (pitch > 0x3FFF) pitch = 0x3FFF;
     vc->counter += pitch;
@@ -384,6 +387,7 @@ static void on_mix(void *ctx) {
 }
 
 void spu_init(void) {
+    arcade_audio_reset();
     next_mix = g_now + (uint64_t)CHUNK * CYCLES_PER_SAMPLE;
     sched_add(next_mix, on_mix, NULL, EV_SPU);
 }

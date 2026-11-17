@@ -4,6 +4,7 @@
 #include <atomic>
 #include "replay_files.h"
 #include "score_delta.h"
+#include "arcade_audio.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -349,7 +350,7 @@ static void replay_dialog_tick(SDL_Window *win) {
 #endif
 
 // ---------------------------------------------------------------- discs (settings "Discs" section)
-static std::string g_jp_disc_path, g_usa_disc_path;   // what this session booted / opened ("" = none)
+static std::string g_jp_disc_path, g_usa_disc_path, g_arcade_roms_path;   // paths opened this session
 static DiscSetup g_discs;                              // what ujl.ini lists (the wizard may change it mid-session)
 
 // ---------------------------------------------------------------- input
@@ -631,6 +632,7 @@ static bool run_setup_wizard(SDL_Window *win, const DiscSetup &start) {
         }
     }
     const bool shots = getenv("UJL_SETUP_SHOTS") != nullptr;
+    bool import_shot = false;
     int frame = 0;
     WizardResult r = WIZ_RUNNING;
     while (r == WIZ_RUNNING) {
@@ -658,16 +660,21 @@ static bool run_setup_wizard(SDL_Window *win, const DiscSetup &start) {
         glClearColor(0.06f, 0.06f, 0.08f, 1);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        if (shots && frame % 20 == 19) {
+        if (shots && wizard_busy() && !import_shot) {
+            save_shot(fbw, fbh, "setup_import.bmp");
+            import_shot = true;
+        }
+        if (shots && !wizard_busy() && frame % 20 == 19) {
             char fn[32];
             SDL_snprintf(fn, sizeof fn, "setup_p%d.bmp", frame / 20);
             save_shot(fbw, fbh, fn);
             if (frame / 20 >= 3) r = (!strcmp(getenv("UJL_SETUP_SHOTS"), "save") && wizard_finish()) ? WIZ_DONE : WIZ_QUIT;
         }
-        frame++;
+        if (!wizard_busy()) frame++;
         SDL_GL_SwapWindow(win);
         if (SDL_GetWindowFlags(win) & SDL_WINDOW_MINIMIZED) SDL_Delay(16);
     }
+    wizard_cancel_import();
     io.ConfigFlags = saved;
     return r == WIZ_DONE;
 }
@@ -838,7 +845,12 @@ int main(int argc, char **argv) {
             fprintf(stderr, "usa disc: %s (Japanese title logo and menus)\n", usa.empty() ? "not imported" : "missing");
     }
     if (!g_discs.arcade_cd.empty()) fprintf(stderr, "arcade cd: %s (not used yet)\n", g_discs.arcade_cd.c_str());
-    if (!g_discs.arcade_roms.empty()) fprintf(stderr, "arcade roms: %s (not used yet)\n", g_discs.arcade_roms.c_str());
+    g_arcade_roms_path = g_discs.arcade_roms;
+    if (!g_discs.arcade_roms.empty()) {
+        if (arcade_audio_init(g_discs.arcade_roms.c_str())) fprintf(stderr, "arcade audio: verified sound ROMs loaded\n");
+        else fprintf(stderr, "arcade audio: %s (using console samples)\n", SDL_GetError());
+    }
+    arcade_audio_set_enabled(ini_get("arcade_audio", "1") != "0");
     {   /* memory card slot 1: a standard raw PS1 card image next to the exe (created blank if missing) */
         std::string scp = getenv("UJL_SCRIPT") ? getenv("UJL_SCRIPT") : "";
         if (UJL_IOS && !scp.empty() && scp[0] != '/') scp = g_base_dir + scp;   // iOS: relative to Documents
@@ -981,7 +993,7 @@ int main(int argc, char **argv) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             imgui_process_event(e);
-            if (e.type == SDL_EVENT_QUIT) running = false;
+            if (e.type == SDL_EVENT_QUIT) { wizard_cancel_import(); running = false; }
             if (e.type == SDL_EVENT_WINDOW_OCCLUDED || e.type == SDL_EVENT_WINDOW_MINIMIZED) win_hidden = true;
             if (e.type == SDL_EVENT_WINDOW_EXPOSED || e.type == SDL_EVENT_WINDOW_RESTORED ||
                 e.type == SDL_EVENT_WINDOW_SHOWN || e.type == SDL_EVENT_WINDOW_FOCUS_GAINED) win_hidden = hid_w != 0;
@@ -1444,9 +1456,18 @@ int main(int argc, char **argv) {
                                                      "English memory card messages, and the English credits song.");
                 row("UJL NOW! arcade CD", g_discs.arcade_cd, "Optional. Arcade attract movies, Joe Chin cutscenes and Stage 1\n"
                                                              "versus content (coming soon).");
-                row("UJL NOW! ROM set", g_discs.arcade_roms, "Optional. Arcade guitar sounds and voice lines (coming soon).");
+                row("UJL NOW! ROM set", g_discs.arcade_roms, "Optional. Higher-quality arcade guitar sounds and PaRappa voice samples.");
+                ImGui::BeginDisabled(!arcade_audio_ready());
+                bool arcade_audio = arcade_audio_enabled();
+                if (ImGui::Checkbox("Arcade guitar and PaRappa audio", &arcade_audio)) {
+                    arcade_audio_set_enabled(arcade_audio);
+                    ini_set("arcade_audio", arcade_audio ? "1" : "0");
+                }
+                ImGui::EndDisabled();
+                if (!g_discs.arcade_roms.empty() && !arcade_audio_ready())
+                    ImGui::TextWrapped("Arcade sound ROMs could not be loaded. Check the imported set and restart the game.");
                 if (ImGui::Button("Manage discs...") && !wizard_active()) wizard_open(false, g_discs);
-                if (g_discs.jp != g_jp_disc_path || g_discs.usa != g_usa_disc_path)
+                if (g_discs.jp != g_jp_disc_path || g_discs.usa != g_usa_disc_path || g_discs.arcade_roms != g_arcade_roms_path)
                     ImGui::TextColored(ImVec4(0.95f, 0.8f, 0.35f, 1), "Restart the game to use the new discs.");
             }
             ImGui::SeparatorText("Memory card");

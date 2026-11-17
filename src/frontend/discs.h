@@ -51,6 +51,8 @@ void discs_to_ini(const DiscSetup &s);
 enum WizardResult { WIZ_RUNNING, WIZ_DONE, WIZ_QUIT, WIZ_CLOSED };
 void wizard_open(bool first_run, const DiscSetup &start);
 bool wizard_active();
+bool wizard_busy();
+void wizard_cancel_import();
 WizardResult wizard_draw(SDL_Window *win);   // WIZ_DONE: saved to ujl.ini; WIZ_QUIT: first run abandoned
 void wizard_drop_file(const char *path);     // a file dragged onto the window
 const DiscSetup &wizard_result();

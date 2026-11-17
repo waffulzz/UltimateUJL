@@ -22,6 +22,7 @@
 #include "imgui.h"
 #include "platform.h"
 #include "touch_pad.h"
+#include "arcade_media.h"
 
 extern "C" {
 bool disc_image_pvd(const char *path, uint8_t pvd[2048]);
@@ -167,15 +168,8 @@ std::vector<DiscInfo> disc_search(const std::vector<std::string> &dirs) {
 }
 
 // ---------------------------------------------------------------- UJL NOW! ROM set
-struct RomFile { const char *name; uint32_t size, crc; };
-static const RomFile k_roms[] = {
-    {"ul1rom0l.ic12", 8388608, 0x7A77CFFD}, {"ul1rom0u.ic11", 8388608, 0x1FDB34B3},
-    {"ul1rom1l.ic10", 8388608, 0x2D300D8C}, {"ul1rom1u.ic9", 8388608, 0xA4762002},
-    {"ul1spro.10c", 524288, 0x1BD0E763},    {"ul1vera.11s", 524288, 0x2F466DF3},
-    {"ul1vera.2l", 2097152, 0x40251BC3},    {"ul1vera.2p", 2097152, 0x98181955},
-    {"ul1wave0.ic2", 8388608, 0x4EFBFF5D},  {"ul1wave1.ic1", 8388608, 0xAD512F4C},
-};
-static const int k_nroms = (int)(sizeof k_roms / sizeof k_roms[0]);
+static const auto &k_roms = arcade_rom_files;
+static const int k_nroms = 10;
 
 static std::string rom_report(const std::vector<std::string> &missing, const std::vector<std::string> &bad) {
     if (missing.size() == (size_t)k_nroms) return "That isn't the UJL NOW! ROM set (no ul1*.* ROM files in it).";
@@ -324,7 +318,7 @@ static const Feature k_features[] = {
     {"Arcade attract movies", NEED_ARCADE_CD, true},
     {"Joe Chin cutscenes", NEED_ARCADE_CD, true},
     {"Stage 1 versus / PaRappa content", NEED_ARCADE_CD, true},
-    {"Arcade guitar sounds and voice lines", NEED_ARCADE_ROMS, true},
+    {"Arcade guitar sounds and voice lines", NEED_ARCADE_ROMS, false},
 };
 
 static unsigned have_mask(const DiscSetup &s) {
@@ -368,6 +362,29 @@ static struct Wizard {
     bool msg_err[SLOT_COUNT] = {};
 } W;
 
+// Large media bundles are streamed on a host thread so the wizard stays responsive.
+struct ArcadeImport {
+    SDL_Thread *thread = nullptr;
+    std::atomic<bool> done{false}, cancel{false};
+    std::atomic<uint64_t> bytes{0}, total{0};
+    std::string source, destination, error;
+    int slot = SLOT_ARCADE_ROMS;
+    bool ok = false, has_cd = false;
+};
+static ArcadeImport *g_import;
+static bool import_progress(void *user, uint64_t done, uint64_t total) {
+    auto *job = static_cast<ArcadeImport *>(user);
+    job->bytes.store(done); job->total.store(total);
+    return !job->cancel.load();
+}
+static int SDLCALL import_thread(void *user) {
+    auto *job = static_cast<ArcadeImport *>(user);
+    job->ok = arcade_media_import(job->source.c_str(), job->destination.c_str(), &job->has_cd, import_progress, job);
+    if (!job->ok) job->error = SDL_GetError();
+    job->done.store(true, std::memory_order_release);
+    return 0;
+}
+
 // File dialogs may answer on another thread: picks are queued under a lock and handled in wizard_draw.
 // (iOS lets several files be picked at once, e.g. both discs.)
 struct Pick { int slot; std::string path; };
@@ -403,8 +420,18 @@ static const char *kind_text(DiscKind k) {
 
 // Put a picked or dropped file where it belongs, whatever slot it was picked for. slot = where errors are shown.
 static void wizard_assign(int slot, const std::string &path) {
+    if (g_import) { set_msg(slot, "An arcade import is already running. Wait for it to finish.", true); return; }
     std::string e = ext_of(path);
-    if (slot == SLOT_ARCADE_ROMS || is_dir(path) || e == ".zip") {
+    if (e == ".zip") {
+        auto *job = new ArcadeImport;
+        job->source = path; job->slot = slot;
+        job->destination = g_base_dir + "arcade/import-" + std::to_string(SDL_GetPerformanceCounter());
+        g_import = job;
+        job->thread = SDL_CreateThread(import_thread, "Arcade import", job);
+        if (!job->thread) { set_msg(slot, SDL_GetError(), true); delete job; g_import = nullptr; }
+        return;
+    }
+    if (slot == SLOT_ARCADE_ROMS || is_dir(path)) {
         RomCheck rc = romset_check(path);
         fprintf(stderr, "setup: %s -> ROM set %s: %s\n", path.c_str(), rc.ok ? "ok" : "rejected", rc.message.c_str());
         if (rc.ok) {
@@ -477,8 +504,15 @@ void wizard_open(bool first_run, const DiscSetup &start) {
 }
 
 bool wizard_active() { return W.active; }
+bool wizard_busy() { return g_import != nullptr; }
+void wizard_cancel_import() {
+    if (!g_import) return;
+    g_import->cancel.store(true);
+    SDL_WaitThread(g_import->thread, nullptr);
+    delete g_import; g_import = nullptr;
+}
 bool wizard_finish() {
-    if (!W.active || W.s.jp.empty()) return false;
+    if (!W.active || W.s.jp.empty() || g_import) return false;
     discs_to_ini(W.s);
     ini_set("setup_done", "1");
     W.active = false;
@@ -493,16 +527,16 @@ void wizard_drop_file(const char *path) {
 }
 
 static void open_dialog(SDL_Window *win, int slot) {
-    static const SDL_DialogFileFilter discs[] = {{"PlayStation disc image", "bin;img;iso;cue;ccd"}, {"All files", "*"}};
+    static const SDL_DialogFileFilter discs[] = {{"Disc image or arcade media bundle", "bin;img;iso;cue;ccd;zip"}, {"All files", "*"}};
     static const SDL_DialogFileFilter roms[] = {
-        {"UJL NOW! ROM set (zip, or any ROM file in the folder)", "zip;ic1;ic2;ic9;ic10;ic11;ic12;10c;11s;2l;2p;chd"},
+        {"UJL NOW! ROM set or CDMEDIA bundle", "zip;ic1;ic2;ic9;ic10;ic11;ic12;10c;11s;2l;2p;chd"},
         {"All files", "*"}};
     std::string start_dir = g_base_dir;
     const std::string &cur = slot == SLOT_JP ? W.s.jp : slot == SLOT_USA ? W.s.usa : slot == SLOT_ARCADE_CD ? W.s.arcade_cd : W.s.arcade_roms;
     if (!cur.empty()) start_dir = dir_of(cur);
     else if (!W.s.jp.empty()) start_dir = dir_of(W.s.jp);
     if (!g_pick_mtx) g_pick_mtx = SDL_CreateMutex();
-    if (slot == SLOT_ARCADE_ROMS) platform_open_file_dialog(on_wizard_pick, (void *)(intptr_t)slot, win, roms, 2, start_dir.c_str(), false);
+    if (slot == SLOT_ARCADE_ROMS) platform_open_file_dialog(on_wizard_pick, (void *)(intptr_t)slot, win, roms, 2, start_dir.c_str(), false, false);
     else platform_open_file_dialog(on_wizard_pick, (void *)(intptr_t)slot, win, discs, 2, start_dir.c_str(), UJL_IOS != 0);
 }
 
@@ -557,6 +591,17 @@ static bool big_button(const char *label, bool enabled = true) {
 
 WizardResult wizard_draw(SDL_Window *win) {
     if (!W.active) return WIZ_CLOSED;
+    if (g_import && g_import->done.load(std::memory_order_acquire)) {
+        SDL_WaitThread(g_import->thread, nullptr);
+        if (g_import->ok) {
+            W.s.arcade_roms = g_import->destination + "/";
+            if (g_import->has_cd) W.s.arcade_cd = g_import->destination + "/arcade.img";
+            set_msg(g_import->slot, g_import->has_cd ? "Imported and verified the arcade ROMs and CD." :
+                    "Imported and verified all 10 arcade ROMs.", false);
+            fprintf(stderr, "setup: arcade import verified (%s)\n", g_import->has_cd ? "ROMs + CD" : "ROMs");
+        } else set_msg(g_import->slot, g_import->error, true);
+        delete g_import; g_import = nullptr;
+    }
     if (g_pick_mtx) {
         SDL_LockMutex(g_pick_mtx);
         std::vector<Pick> picks;
@@ -578,7 +623,15 @@ WizardResult wizard_draw(SDL_Window *win) {
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings;
     if (W.first_run) flags |= ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
     bool open = true;
-    ImGui::Begin(W.first_run ? "Ultimate Um Jammer Lammy setup###setup" : "Manage discs###setup", W.first_run ? nullptr : &open, flags);
+    ImGui::Begin(W.first_run ? "Ultimate Um Jammer Lammy setup###setup" : "Manage discs###setup", W.first_run || g_import ? nullptr : &open, flags);
+    if (g_import) {
+        ImGui::TextUnformatted("Importing arcade media...");
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel import")) g_import->cancel.store(true);
+        uint64_t total = g_import->total.load(), bytes = g_import->bytes.load();
+        ImGui::ProgressBar(total ? (float)((double)bytes / total) : 0.0f);
+    }
+    ImGui::BeginDisabled(g_import != nullptr);
     float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2;
     ImGui::BeginChild("page", ImVec2(0, -footer));
     const int first_page = W.first_run ? PAGE_WELCOME : PAGE_JP;
@@ -650,10 +703,10 @@ WizardResult wizard_draw(SDL_Window *win) {
                   "The English title logo, menu text and tooltips, memory card messages and credits song are taken "
                   "from this disc. The game still runs from the Japanese disc.", NEED_USA, W.s.usa);
         draw_slot(win, SLOT_ARCADE_CD, "UJL NOW! arcade CD",
-                  "The CD from the arcade version (the .img, .ccd or .cue of a CloneCD image).", NEED_ARCADE_CD,
+                  "The arcade CD image, or UJLNOW-CDMEDIA.zip to import the CD and ROMs together.", NEED_ARCADE_CD,
                   W.s.arcade_cd);
         draw_slot(win, SLOT_ARCADE_ROMS, "UJL NOW! ROM set",
-                  "The arcade board's ROMs (MAME set \"ujlnow\"): its zip, or the folder with the ul1*.* files.",
+                  "Choose ujlnow.zip, UJLNOW-CDMEDIA.zip, or the folder with the ul1*.* board ROMs.",
                   NEED_ARCADE_ROMS, W.s.arcade_roms);
         draw_msg(SLOT_GENERAL);
         break;
@@ -687,6 +740,7 @@ WizardResult wizard_draw(SDL_Window *win) {
         wizard_finish();
         res = WIZ_DONE;
     }
+    ImGui::EndDisabled();
     ImGui::End();
     if (!open) { W.active = false; return WIZ_CLOSED; }
     if (res == WIZ_QUIT) W.active = false;

@@ -51,6 +51,9 @@ set(RUNTIME_SOURCES
   src/runtime/mem.c
   src/runtime/cpu.c
   src/runtime/pause.c
+  src/runtime/asset_zip.c
+  src/runtime/arcade_media.c
+  src/runtime/arcade_audio.c
   src/runtime/bios.c
   src/runtime/gte.c
   src/runtime/gpu.c
@@ -75,6 +78,12 @@ set(RUNTIME_SOURCES
 )
 add_library(runtime STATIC ${RUNTIME_SOURCES})
 target_include_directories(runtime PUBLIC src/runtime "${RECOMP_DIR}")
+# Enable the public-domain inflater in a private header, leaving SDL's configuration untouched.
+file(READ "${CMAKE_SOURCE_DIR}/third_party/SDL/src/video/miniz.h" _ujl_miniz)
+string(REPLACE "#define MINIZ_NO_INFLATE_APIS" "/* inflate enabled for media import */" _ujl_miniz "${_ujl_miniz}")
+file(WRITE "${CMAKE_BINARY_DIR}/asset_include/ujl_miniz.h" "${_ujl_miniz}")
+unset(_ujl_miniz)
+target_include_directories(runtime PRIVATE "${CMAKE_BINARY_DIR}/asset_include")
 target_link_libraries(runtime PUBLIC recomp SDL3::SDL3-static)
 # Generated functions call native hooks in otherwise unreferenced runtime objects. Declare the real static
 # library cycle so CMake repeats both archives on ELF linkers instead of losing those hook definitions.
@@ -101,6 +110,11 @@ if(NOT UJL_IOS)
   target_include_directories(ujl_pause_test PRIVATE src/runtime src/frontend)
   target_link_libraries(ujl_pause_test PRIVATE SDL3::SDL3-static)
   target_compile_options(ujl_pause_test PRIVATE -UNDEBUG)
+  add_executable(ujl_asset_test EXCLUDE_FROM_ALL tests/asset_zip_test.c)
+  target_link_libraries(ujl_asset_test PRIVATE runtime)
+  add_executable(ujl_arcade_test EXCLUDE_FROM_ALL tests/arcade_audio_test.c)
+  target_link_libraries(ujl_arcade_test PRIVATE runtime)
+  target_compile_options(ujl_arcade_test PRIVATE -UNDEBUG)
 endif()
 
 # Dear ImGui (vendored)
@@ -205,6 +219,7 @@ if(EXISTS "${RECOMP_DIR_US}/recomp_files.cmake" AND NOT UJL_IOS)
   target_compile_options(recomp_us PRIVATE -w -O2 -fno-strict-aliasing)
   add_library(runtime_us STATIC ${RUNTIME_SOURCES})
   target_include_directories(runtime_us PUBLIC src/runtime "${RECOMP_DIR_US}")
+  target_include_directories(runtime_us PRIVATE "${CMAKE_BINARY_DIR}/asset_include")
   target_link_libraries(runtime_us PUBLIC recomp_us SDL3::SDL3-static)
   target_link_libraries(recomp_us PRIVATE runtime_us)
   target_compile_options(runtime_us PRIVATE -w -O2)
