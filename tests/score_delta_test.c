@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
     sample(0, 700); sample(200, 800); finish(1);
     after = SDL_LoadFile(path, &m); assert(after && m == 72);
     uint32_t initial; memcpy(&initial, (uint8_t *)after + 52, 4);
-    assert(SDL_SwapLE32(initial) == 0); SDL_free(after);
+    assert(SDL_Swap32LE(initial) == 0); SDL_free(after);
     restart(); sample(100, 700); draw(); expect_color(128, 128, 128);
 
     /* Invalid files and a different mode never supply a bogus reference. */

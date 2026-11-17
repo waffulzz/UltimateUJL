@@ -151,18 +151,27 @@ jobs:
         if: failure() && matrix.sdk == 'iphonesimulator'
         run: |
           grep -E "error:|undefined reference|ld: " build/picker-build.log | head -20 | sed 's/^/::error::/' || true
-      - name: Run native picker lifecycle tests (iPhone Duo, iOS 27.2)
+      - name: Boot iPhone Duo (iOS 27.2)
         if: matrix.sdk == 'iphonesimulator'
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for k,v in d["devices"].items() if "iOS-27-2" in k for x in v if x["name"] == "iPhone Duo"))')
+          echo "UJL_TEST_DEVICE=$device" >> "$GITHUB_ENV"
           xcrun simctl boot "$device" || true
-          trap 'xcrun simctl shutdown "$device" >/dev/null 2>&1 || true' EXIT
           xcrun simctl bootstatus "$device" -b
+      - name: Install native picker test
+        if: matrix.sdk == 'iphonesimulator'
+        timeout-minutes: 2
+        run: xcrun simctl install "$UJL_TEST_DEVICE" build/ios/UJLPickerTest.app
+      - name: Run native picker lifecycle tests
+        if: matrix.sdk == 'iphonesimulator'
+        timeout-minutes: 3
+        run: |
+          device=$UJL_TEST_DEVICE
           bundle=io.github.waffulzz.UltimateUJL.pickertest
-          xcrun simctl install "$device" build/ios/UJLPickerTest.app
-          xcrun simctl launch "$device" "$bundle"
           data=$(xcrun simctl get_app_container "$device" "$bundle" data)
+          echo "UJL_TEST_DATA=$data" >> "$GITHUB_ENV"
+          xcrun simctl launch --stdout="$PWD/build/picker-stdout.log" --stderr="$PWD/build/picker-stderr.log" "$device" "$bundle"
           result="$data/Documents/picker-test-result.txt"
           for i in $(seq 1 120); do
             if [ -f "$result" ]; then break; fi
@@ -170,8 +179,6 @@ jobs:
           done
           if [ ! -f "$result" ]; then
             echo '::error::Native picker test did not write a result.'
-            xcrun simctl spawn "$device" log show --last 2m --style compact --predicate 'process == "UJLPickerTest"' > build/picker-test.log
-            tail -60 build/picker-test.log
             exit 1
           fi
           cat "$result"
@@ -179,6 +186,18 @@ jobs:
             echo "::error::$(head -1 "$result")"
             exit 1
           fi
+      - name: Report native picker diagnostics
+        if: failure() && matrix.sdk == 'iphonesimulator'
+        timeout-minutes: 1
+        run: |
+          for log in "$UJL_TEST_DATA/Documents/picker-test-progress.txt" build/picker-stdout.log build/picker-stderr.log; do
+            if [ -f "$log" ]; then tail -20 "$log" | sed 's/^/::error::/'; fi
+          done
+          xcrun simctl list devices booted
+      - name: Shut down test simulator
+        if: always() && matrix.sdk == 'iphonesimulator' && env.UJL_TEST_DEVICE != ''
+        timeout-minutes: 1
+        run: xcrun simctl shutdown "$UJL_TEST_DEVICE" || true
 
   windows:
     name: Windows (clang, MinGW UCRT)

@@ -8,6 +8,10 @@
 #include <cstdlib>
 
 static std::string result_path;
+static void progress(const char *message) {
+    FILE *file = fopen((platform_data_dir() + "picker-test-progress.txt").c_str(), "a");
+    if (file) { fprintf(file, "%s\n", message); fclose(file); }
+}
 static void check(bool ok, const char *message) {
     if (ok) return;
     std::string error = std::string("FAIL: ") + message + "\n";
@@ -49,10 +53,12 @@ static NSURL *staged_file(NSString *name) {
 int main(int, char **) {
     result_path = platform_data_dir() + "picker-test-result.txt";
     SDL_RemovePath(result_path.c_str());
+    progress("Entered SDL main");
     check(SDL_Init(SDL_INIT_VIDEO), "SDL video initialization");
     SDL_Window *window = SDL_CreateWindow("Picker checks", 320, 240, 0);
     check(window != nullptr, "SDL window creation");
     SDL_PumpEvents();
+    progress("Created SDL window");
     const char bytes[] = "synthetic replay data";
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *docs = [NSString stringWithUTF8String:platform_data_dir().c_str()];
@@ -60,6 +66,7 @@ int main(int, char **) {
     Pick exported;
     platform_export_file_dialog(picked, &exported, window, "Test.ujlreplay", bytes, sizeof bytes);
     wait_for([&] { return current_picker(window) != nil; });
+    progress("Presented export picker");
     UIDocumentPickerViewController *picker = current_picker(window);
     check(picker.documentPickerMode == UIDocumentPickerModeExportToService, "native export picker mode");
     NSURL *staged = staged_file(@"Test.ujlreplay");
@@ -75,6 +82,7 @@ int main(int, char **) {
     id<UIDocumentPickerDelegate> delegate = picker.delegate;
     [delegate documentPicker:picker didPickDocumentsAtURLs:@[destination]];
     wait_for([&] { return exported.count == 1; });
+    progress("Completed export callback");
     check(!exported.error && exported.path == destination.absoluteString.UTF8String, "export destination callback");
     check(![fm fileExistsAtPath:staged.path] && [fm fileExistsAtPath:destination.path], "export cleans staging, keeps destination");
     [delegate documentPickerWasCancelled:picker];
@@ -90,6 +98,7 @@ int main(int, char **) {
         if (swipe) [(id<UIAdaptivePresentationControllerDelegate>)delegate presentationControllerDidDismiss:picker.presentationController];
         else [delegate documentPickerWasCancelled:picker];
         wait_for([&] { return cancelled.count == 1; });
+        progress(swipe ? "Completed swipe cancellation" : "Completed button cancellation");
         check(!cancelled.error && cancelled.path.empty() && ![fm fileExistsAtPath:staged.path], "cancel/swipe completes and cleans staging");
     }
 
@@ -105,6 +114,7 @@ int main(int, char **) {
     check(picker.documentPickerMode == UIDocumentPickerModeImport, "native replay import is a sandbox copy");
     [picker.delegate documentPicker:picker didPickDocumentsAtURLs:@[imported]];
     wait_for([&] { return opened.count == 1; });
+    progress("Completed import callback");
     check(!opened.error && opened.path == imported.fileSystemRepresentation, "temporary import path survives callback");
     check([[NSString stringWithContentsOfFile:settings encoding:NSUTF8StringEncoding error:nil] isEqualToString:@"original settings"], "import preserves settings");
     check([fm fileExistsAtPath:imported.path], "import readable for next UI tick");
