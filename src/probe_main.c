@@ -1,6 +1,7 @@
 /* Headless boot probe: runs the game with no window and prints per-second stats. */
 #include "runtime/psx.h"
 #include "runtime/arcade_audio.h"
+#include "runtime/arcade_stage1.h"
 #include "runtime/gpu.h"
 #include <stdlib.h>
 #include <SDL3/SDL.h>
@@ -283,6 +284,7 @@ int main(int argc, char **argv) {
     }
     const char *arcade = getenv("UJL_ARCADE_ROMS");
     if (arcade && !arcade_audio_init(arcade)) { rt_log("arcade audio: %s", SDL_GetError()); return 1; }
+    if (arcade && !arcade_stage1_init(arcade)) { rt_log("arcade Stage 1: %s", SDL_GetError()); return 1; }
     arcade_audio_set_enabled(!getenv("UJL_ARCADE_AUDIO") || atoi(getenv("UJL_ARCADE_AUDIO")) != 0);
     if (!rt_boot(disc)) return 1;
     if (getenv("PROBE_RECLOG_AT")) { gpu_rec_install(); gpu_rec_set_enabled(1); } else gpu_soft_install();

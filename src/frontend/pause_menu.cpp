@@ -14,14 +14,12 @@ void rect(std::vector<uint32_t> &p, int x, int y, int w, int h, uint32_t c) {
 
 PauseAction PauseMenu::toggle(uint16_t held) {
     previous = held;
-    if (stage_picker) return PauseAction::Back;
     if (!visible) { visible = true; selection = 0; return PauseAction::Open; }
     return choose(0, held);
 }
 PauseAction PauseMenu::choose(int row, uint16_t held) {
     if (!visible || row < 0 || row > 2) return PauseAction::None;
     selection = row;
-    if (stage_picker) return row == 0 ? PauseAction::Resume : row == 1 ? PauseAction::Again : PauseAction::Settings;
     if (row == 2) return PauseAction::Settings;
     visible = false;
     blocked |= held; // the answer/resume button must be released before it can become a note
@@ -33,12 +31,12 @@ PauseAction PauseMenu::input(uint16_t held, bool available, bool confirm_cross, 
     previous = held;
     if (settings_open) return PauseAction::None;
     if (!visible) return available && (pressed & start) ? toggle(held) : PauseAction::None;
-    if (pressed & start) return choose(stage_picker ? selection : 0, held);
+    if (pressed & start) return choose(0, held);
     if (pressed & up) selection = (selection + 2) % 3;
     if (pressed & down) selection = (selection + 1) % 3;
     uint16_t yes = 1u << (confirm_cross ? B_CROSS : B_CIRCLE);
     uint16_t no = 1u << (confirm_cross ? B_CIRCLE : B_CROSS);
-    if (pressed & no) return stage_picker ? PauseAction::Back : choose(0, held);
+    if (pressed & no) return choose(0, held);
     if (pressed & yes) return choose(selection, held);
     return PauseAction::None;
 }
@@ -99,15 +97,9 @@ void PauseMenu::rasterize(std::vector<uint32_t> &pixels) const {
     rect(pixels, 6, 6, width - 8, height - 8, color(0, 0, 0, 220));
     rect(pixels, 2, 2, width - 8, height - 8, color(236, 236, 236));
     rect(pixels, 4, 4, width - 12, height - 12, color(16, 16, 28, 245));
-    const char *titles[] = {"SOLO", "CO-OP", "VERSUS"};
-    text(pixels, stage_picker ? (picker_mode < 0 ? "STAGE 1" : titles[picker_mode]) : "PAUSE", 20, color(255, 232, 112));
+    text(pixels, "PAUSE", 20, color(255, 232, 112));
     rect(pixels, 28, 45, width - 56, 1, color(112, 112, 128));
     const char *items[] = {"RESUME", replay ? "EXIT REPLAY" : "AGAIN?", "SETTINGS"};
-    if (stage_picker) {
-        items[0] = picker_mode < 0 ? "SOLO" : picker_mode == 0 ? "LAMMY" : "LAMMY & LAMMY";
-        items[1] = picker_mode < 0 ? "CO-OP" : picker_mode == 0 ? "PARAPPA" : "LAMMY & PARAPPA";
-        items[2] = picker_mode < 0 ? "VERSUS" : "BACK";
-    }
     for (int i = 0; i < 3; i++) {
         if (i == selection) {
             rect(pixels, 24, 56 + i * 28, width - 48, 24, color(48, 56, 100));

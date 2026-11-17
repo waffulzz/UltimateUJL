@@ -1,14 +1,12 @@
 #include "arcade_stage1.h"
 #include "psx.h"
-#include "pause.h"
 #include <stdlib.h>
 
 void hook_score_attempt_reset(CPU *c, uint32_t fn);
 static uint32_t imported_resources[1024], scene_data;
 static unsigned active_slot;
 static bool player_models_ready;
-static bool restoring, frontend_picker;
-static SDL_AtomicInt picker_pending, picker_answer;
+static bool restoring;
 static uint32_t sequence_start, sequence_end;
 static uint8_t sequence_banks[83];
 static uint8_t *console_sound_archive;
@@ -17,37 +15,6 @@ static uint32_t guitar_vh_size, guitar_vb_size;
 static uint32_t loaded_guitar_header, stage_assets_end;
 bool disc_read_file(const char *path, uint8_t **data, uint32_t *size);
 void hook_force_scene(CPU *c, uint32_t fn);
-
-void arcade_stage1_frontend_picker(bool enabled) { frontend_picker = enabled; }
-bool arcade_stage1_picker_pending(void) { return SDL_GetAtomicInt(&picker_pending) != 0; }
-void arcade_stage1_picker_answer(int submode) {
-    if (submode < -1 || submode > 5 || !arcade_stage1_picker_pending()) return;
-    SDL_SetAtomicInt(&picker_answer, submode);
-    SDL_SetAtomicInt(&picker_pending, 0);
-    rt_pause_set(RT_PAUSE_STAGE_PICKER, 0);
-}
-int arcade_stage1_menu_screen(CPU *c, int screen) {
-    static int previous_screen = -1;
-    if (screen == 35 && previous_screen == 4 && mem_r32(0x80078ae0) == 1 &&
-        mem_r32(0x80078ae4) == 0 && arcade_stage1_resources_ready()) {
-        const char *forced = getenv("UJL_ARCADE_STAGE1_MODE");
-        int submode = forced ? atoi(forced) : -2;
-        if (!forced && frontend_picker) {
-            SDL_SetAtomicInt(&picker_answer, -1);
-            rt_pause_set(RT_PAUSE_STAGE_PICKER, 1);
-            SDL_SetAtomicInt(&picker_pending, 1);
-            rt_idle(c);
-            submode = SDL_GetAtomicInt(&picker_answer);
-        }
-        if (submode == -1) screen = 12; /* rebuild Stage Select after its confirm animation */
-        else if (submode >= 0 && submode <= 5) {
-            mem_w32(0x80078ae4, (uint32_t)submode);
-            if (submode != 0 && submode != 3) screen = 25; /* original player/COM options */
-        }
-    }
-    previous_screen = screen;
-    return screen;
-}
 
 void hook_stage1_scene_route(CPU *c, uint32_t fn) {
     hook_force_scene(c, fn);

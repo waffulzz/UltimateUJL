@@ -78,6 +78,9 @@
 801cbc4c@COMOD0.MEN  menu_sprite_submit        # sprite: +8 x, +10 y, +12 u, +13 v, +14 clut, +16 w, +18 h
 801cc188@COMOD0.MEN  menu_card_message_draw    # (msg) memory card message as one sprite
 801cd2a0@COMOD0.MEN  stage_select_tooltip_build
+801d5048@COMOD0.MEN  stage_select_bar_draw
+801c68cc@COMOD0.MEN  stage_select_move
+801c64e8@COMOD0.MEN  menu_grid_move_vertical
 801cad58@COMOD0.MEN  caption_scene_setup       # picks caption directory entry 0 (file 0x17b64)
 801cae58@COMOD0.MEN  caption_timeline_load     # from the pointer variable 0x801db348
 

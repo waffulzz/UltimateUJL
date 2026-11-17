@@ -214,6 +214,8 @@ void hook_stage1_scene_cues(CPU *c, uint32_t fn);
 void hook_stage1_sound_bank(CPU *c, uint32_t fn);
 void hook_stage1_bank_load(CPU *c, uint32_t fn);
 void hook_stage1_scene_route(CPU *c, uint32_t fn);
+int filter_stage1_menu_tooltip(CPU *c, uint32_t fn);
+int filter_stage1_menu_move(CPU *c, uint32_t fn);
 int filter_replay_directory(CPU *c, uint32_t fn);
 int filter_replay_slots(CPU *c, uint32_t fn);
 int filter_replay_save(CPU *c, uint32_t fn);

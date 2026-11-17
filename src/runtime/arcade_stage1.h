@@ -7,12 +7,9 @@ extern "C" {
 bool arcade_stage1_init(const char *rom_set);
 void arcade_stage1_clear(void);
 bool arcade_stage1_resources_ready(void);
-/* Native Stage Select bridge. The frontend answers the picker while the guest is parked. */
-void arcade_stage1_frontend_picker(bool enabled);
-bool arcade_stage1_picker_pending(void);
-void arcade_stage1_picker_answer(int submode); /* -1 returns to Stage Select */
 struct CPU;
 int arcade_stage1_menu_screen(struct CPU *c, int screen);
+void arcade_stage1_menu_sprite(struct CPU *c);
 /* Indices 0..5 select the board's six Stage 1 overlay slots. */
 const uint8_t *arcade_stage1_overlay(unsigned mode, size_t *size);
 const uint8_t *arcade_stage1_asset(const char *name, size_t *size);

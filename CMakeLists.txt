@@ -57,6 +57,7 @@ set(RUNTIME_SOURCES
   src/runtime/arcade_audio.c
   src/runtime/arcade_stage1.c
   src/runtime/arcade_stage1_play.c
+  src/runtime/arcade_stage1_menu.c
   src/runtime/bios.c
   src/runtime/gte.c
   src/runtime/gpu.c

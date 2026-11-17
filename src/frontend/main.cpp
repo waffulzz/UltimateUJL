@@ -216,23 +216,6 @@ static void sync_pause_audio() {
 }
 static void pause_action(PauseAction action) {
     if (action == PauseAction::None) return;
-    if (g_pause_menu.stage_picker) {
-        int row = action == PauseAction::Resume ? 0 : action == PauseAction::Again ? 1 : 2;
-        if (action == PauseAction::Back || (g_pause_menu.picker_mode >= 0 && row == 2)) {
-            if (g_pause_menu.picker_mode >= 0) { g_pause_menu.picker_mode = -1; g_pause_menu.selection = 0; return; }
-            arcade_stage1_picker_answer(-1);
-        } else if (g_pause_menu.picker_mode < 0) {
-            g_pause_menu.picker_mode = row; g_pause_menu.selection = 0; return;
-        } else {
-            static const int modes[3][2] = {{0, 3}, {2, 5}, {1, 4}};
-            arcade_stage1_picker_answer(modes[g_pause_menu.picker_mode][row]);
-        }
-        g_pause_menu.stage_picker = g_pause_menu.visible = false;
-        g_pause_menu.blocked |= g_pause_menu.previous;
-        g_input_buttons = 0xffff;
-        sync_pause_audio();
-        return;
-    }
     if (action == PauseAction::Open) {
         g_pause_menu.replay = g_pause_replay.load();
         g_pause_font_captured = false;
@@ -867,10 +850,9 @@ int main(int argc, char **argv) {
     if (!g_discs.arcade_roms.empty()) {
         if (arcade_audio_init(g_discs.arcade_roms.c_str())) fprintf(stderr, "arcade audio: verified sound ROMs loaded\n");
         else fprintf(stderr, "arcade audio: %s (using console samples)\n", SDL_GetError());
-        if (arcade_stage1_init(g_discs.arcade_roms.c_str())) {
-            arcade_stage1_frontend_picker(true);
-            fprintf(stderr, "arcade Stage 1: restored variants available in Stage Select\n");
-        } else fprintf(stderr, "arcade Stage 1: %s\n", SDL_GetError());
+        if (arcade_stage1_init(g_discs.arcade_roms.c_str()))
+            fprintf(stderr, "arcade Stage 1: native candy bars available\n");
+        else fprintf(stderr, "arcade Stage 1: %s\n", SDL_GetError());
     }
     arcade_audio_set_enabled(ini_get("arcade_audio", "1") != "0");
     {   /* memory card slot 1: a standard raw PS1 card image next to the exe (created blank if missing) */
@@ -999,15 +981,7 @@ int main(int argc, char **argv) {
         int duration = 0, vb = 0, score = 0, song = 0, raw_song = 0, queued = 0;
         uint64_t until = 0, cycles = 0, resize_shot_at = 0;
     } pause_test;
-    int picker_test_step = 0, picker_test_vblank = 0;
-    uint64_t picker_test_at = 0;
     while (running) {
-        if (arcade_stage1_picker_pending() && !g_pause_menu.stage_picker) {
-            g_pause_menu.stage_picker = g_pause_menu.visible = true;
-            g_pause_menu.picker_mode = -1; g_pause_menu.selection = 0;
-            g_pause_font_captured = false;
-            sync_pause_audio();
-        }
         {   // report the previous frame if it was a hitch
             uint64_t t = SDL_GetTicksNS(), total = t - tframe0;
             if (total > 40000000ull && (g_set.perf || fps_stats_env)) {
@@ -1051,25 +1025,6 @@ int main(int argc, char **argv) {
         uint16_t touch_held = touchpad_held();
         uint16_t held = (uint16_t)(~poll_buttons(true) | touch_held | g_script_held.load());
         pause_action(g_pause_menu.input(held, g_pause_available, g_confirm_cross != 0, g_set.show_overlay));
-        // Scripted picker checks use host time because the menu deliberately parks the guest clock.
-        if (!g_script.empty() && g_pause_menu.stage_picker && rt_pause_active()) {
-            if (const char *pick = getenv("UJL_SCRIPT_STAGE_PICKER")) {
-                int sub = std::clamp(atoi(pick), -1, 5);
-                if (!picker_test_at) { picker_test_at = SDL_GetTicks() + 500; picker_test_vblank = g_vblanks.load(); }
-                if (SDL_GetTicks() >= picker_test_at && picker_test_step < 2) {
-                    bool stable = picker_test_vblank == g_vblanks.load();
-                    static const int rows[6][2] = {{0,0}, {2,0}, {1,0}, {0,1}, {2,1}, {1,1}};
-                    if (sub < 0) pause_action(PauseAction::Back);
-                    else pause_action(g_pause_menu.choose(rows[sub][picker_test_step], held));
-                    picker_test_step++; picker_test_at = SDL_GetTicks() + 500;
-                    g_shot_req = picker_test_vblank + picker_test_step;
-                    if (!g_pause_menu.stage_picker) {
-                        pause_test.failed |= !stable;
-                        fprintf(stderr, "stage-picker-check: submode %d, frozen=%d\n", sub, stable);
-                    }
-                }
-            }
-        }
         uint16_t game_held = (uint16_t)(~poll_buttons(!ImGui::GetIO().WantCaptureKeyboard) | touch_held | g_script_held.load());
         g_input_buttons = (uint16_t)~g_pause_menu.game_buttons(game_held);
         if (int ms = g_script_pause_ms.exchange(0); ms > 0) {

@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include "gpu.h"
 #include "recomp.h"
+#include "arcade_stage1.h"
 #include <string.h>
 #include <SDL3/SDL_timer.h>
 
@@ -454,6 +455,7 @@ static void tt_retarget(uint32_t sp, int v_us, int h) {
 }
 void hook_tooltip_sprite(CPU *c, uint32_t fn) {
     (void)fn;
+    arcade_stage1_menu_sprite(c);
     {   /* UJL_AL_LOG (debug): sprites from the memory card message page (tpage 704) */
         static int st = -1, n; if (st < 0) st = getenv("UJL_AL_LOG") != NULL;
         uint32_t s5 = c->r[5]; uint16_t md = (uint16_t)mem_r32(s5 + 24);
