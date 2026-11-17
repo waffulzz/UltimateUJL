@@ -55,13 +55,26 @@ int main(int argc, char **argv) {
     char *path = pb_path(dir); size_t n = 0;
     void *original = SDL_LoadFile(path, &n); assert(original && n >= 64);
 
-    restart(); expect_color(128, 128, 128); /* +0, on track */
+    restart(); expect_color(128, 128, 128); /* +/-0, on track */
     assert(count == 2 && emitted[0].type == PRIM_RECT && emitted[0].w == 12 &&
-           emitted[0].v[0].u == 196 && emitted[0].v[0].v == 12); /* actual native S_PLUS0 */
+           emitted[0].v[0].u == 184 && emitted[0].v[0].v == 12); /* actual native S_PLMI0 */
     sample(100, 150); draw(); expect_color(32, 64, 128); /* +50 */
+    assert(emitted[0].v[0].u == 196); /* native S_PLUS0 */
     assert(emitted[count - 2].v[0].u == 82 && emitted[count - 1].v[0].u == 32);
     sample(200, 150); draw(); expect_color(128, 32, 32); /* -50 */
     assert(emitted[0].v[0].u == 172 && emitted[0].v[0].v == 12); /* actual native S_MINUS0 */
+    /* The HUD can disappear for a no-note break. A temporary missing overlay or CD clock must recover
+       without losing the reference, changing its time origin, or restarting the score trace. */
+    overlay = NULL; score_delta_tick(); draw(); assert(!count);
+    overlay = "COMOD6.SNG"; sample(220, 150); draw(); expect_color(128, 32, 32);
+    sample(0, 150); sample(240, 200); draw(); expect_color(128, 128, 128);
+    assert(emitted[0].v[0].u == 184); /* +/-0 after the HUD returns */
+    /* Cinematic clipping is not a coordinate translation; both native display buffers still match. */
+    digit.clip_x0 = 16; digit.clip_y0 = 24; draw(); expect_color(128, 128, 128);
+    digit.v[0].y += 256; digit.clip_y0 += 256; digit.clip_y1 += 256;
+    draw(); expect_color(128, 128, 128);
+    assert(emitted[0].v[0].y == 426);
+    digit.v[0].y -= 256; digit.clip_y0 = digit.clip_x0 = 0; digit.clip_y1 = 239;
     finish(0); /* an aborted/failed run cannot replace a PB */
     size_t m = 0; void *after = SDL_LoadFile(path, &m); assert(after && m == n && !memcmp(after, original, n)); SDL_free(after);
 
@@ -78,7 +91,9 @@ int main(int argc, char **argv) {
     /* Stage 3's ending movie resets the clock while the song overlay and old HUD are still present.
        Keep the complete trace through that reset, then save it at the later results hook. */
     restart(); sample(100, 200); sample(200, 400);
+    mem_w32(0x80071dd4, 8); score_delta_tick();
     mem_w32(0x80078af8, 0); score_delta_tick(); draw(); assert(!count);
+    mem_w32(0x80078af8, 250); score_delta_tick(); draw(); assert(!count); /* ending movie cannot restart capture */
     finish(1); restart(); sample(200, 400); draw(); expect_color(128, 128, 128);
     /* A real retry calls the initializer and must not inherit the previous attempt's score points. */
     restart(); sample(100, 1000); restart(); sample(100, 250); sample(200, 500); finish(1);
@@ -90,6 +105,13 @@ int main(int argc, char **argv) {
     restart(); sample(200, 600); draw(); expect_color(128, 128, 128);
     restart(); sample(100, 1500); mem_w32(0x80071dd4, 9); sample(200, 2000); finish(0);
     restart(); sample(200, 600); draw(); expect_color(128, 128, 128);
+    /* Saving after an interlude retains the original start and all later points, not just the final HUD. */
+    restart(); sample(100, 700); overlay = NULL; score_delta_tick(); overlay = "COMOD6.SNG";
+    sample(0, 700); sample(200, 800); finish(1);
+    after = SDL_LoadFile(path, &m); assert(after && m == 72);
+    uint32_t initial; memcpy(&initial, (uint8_t *)after + 52, 4);
+    assert(SDL_SwapLE32(initial) == 0); SDL_free(after);
+    restart(); sample(100, 700); draw(); expect_color(128, 128, 128);
 
     /* Invalid files and a different mode never supply a bogus reference. */
     assert(SDL_SaveFile(path, "bad", 3)); score_delta_init(dir); mem_w32(0x80078af8, 0); draw(); assert(!count);

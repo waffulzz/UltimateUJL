@@ -316,8 +316,9 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
 - **Live score comparison (src/runtime/score_delta.c, 2026-11-16)**: beside the native score counter, show the
   signed difference from the personal-best run at the **same song time**. Positive is blue, negative red, zero
   white; hide it entirely until a completed reference exists. This is emitted into the PS1 GPU stream (both
-  backends), using the game's resident `SCOR_SUJ` score digits and stock `S_PLUS0` / `S_MINUS0` score icons.
-  These 12x12 sprites are at VRAM 945,268 / 939,268 (4bpp), UV 196,12 / 172,12 on the score texture page,
+  backends), using the game's resident `SCOR_SUJ` score digits and stock `S_PLUS0` / `S_MINUS0` / `S_PLMI0`
+  score icons (zero is white +/-0). These 12x12 sprites are at VRAM 945,268 / 939,268 / 942,268 (4bpp),
+  UV 196,12 / 172,12 / 184,12 on the score texture page,
   and share the digits' palette. (`LETTER_E`'s ASCII `+` table slot is an accented letter.)
   No font bitmap is shipped, and there is no ImGui gameplay overlay. Match the ones-digit sprite (10x12,
   tpage 896,256; UV u=32+10*digit, v=0; local y=170, x=52/292). Keep the original CLUT; modulation supplies the
@@ -325,8 +326,12 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   follows the normal 2D pillarboxing at all aspect ratios. Co-op uses its shared score; COM counters get no delta.
   - Sample signed `player_score` (80019504, meter at 80071dbc; versus P2 +10) against `song_time_get`
     (80019244, clock at 80078af8), keeping only score changes. Begin at the first counter, not overlay loading
-    (the player state is initialized later). Preserve the trace when the clock rewinds: the AGAIN? prompt and
-    ending movies reset it before results (reproduced on Stage 3). `song_attempt_reset` (8001a940) explicitly
+    (the player state is initialized later). A temporary unavailable overlay or backwards CD clock must not
+    permanently suspend capture when the note HUD returns. Hold the last sample until valid time resumes.
+    Only latch the clock-reset suspension after actual end/failure/Start flags (80071dd4 mask 0x29): the AGAIN?
+    prompt and ending movies reset it before results (reproduced on Stage 3). Match HUD positions in the native
+    frame buffers, not relative to the draw clip: cinematic clipping is not a coordinate translation.
+    `song_attempt_reset` (8001a940) explicitly
     discards an old attempt when the player retries. `stage_results_apply` (800142e8), called after scene cleanup
     and before high-score/name-entry decisions, returns a grade-dependent result: zero can mean a full song
     below GOOD. Latch the natural end from 80071dd4 bit 3 with bits 0/5 clear (early failure / Start quit).
@@ -342,10 +347,13 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
     overflowed runs are discarded. `UJL_SCORE_TRACE_DIR` isolates test fixtures; `UJL_SCORE_LOG=1` logs sampling.
   - Verification: `ujl_score_test` (explicit build target, synthetic RAM only) covers native primitives, matching
     song times, persistence/replacement, failure/Autoplay/replay exclusions, final awards, corrupt files,
-    separate versus players and shared co-op, full-song low grades, prompt clock resets, and real retries.
+    separate versus players and shared co-op, full-song low grades, prompt clock resets, real retries, overlay/CD
+    gaps, trace continuity after a hidden HUD, inset clipping and the stock +/- icon for zero.
     Disc-free smoke passes; Stage 6 checked with the software renderer and the hardware renderer at 21:9 using
     isolated reference fixtures. Stage 3 verified through the real prompt/results path, saving after the clock
-    reset; a saved full-song replay also reaches natural end with a zero result (flags 0xc).
+    reset; a saved full-song replay also reaches natural end with a zero result (flags 0xc). Stage 1 regression:
+    inject one zero-clock vblank at 100 s; the old recorder permanently stops at time 7394, while the fix
+    continues to time 26115. Software captures show stock +/-0 and the later blue delta after the gap.
 - **Unlock all (src/runtime/unlock.c)**: ORs progress bits into 0x801a5310 every vblank: +0x07 stage mask,
   +0x08/09, +0x0A..0F and +0x1A..1F per-stage flags (0x3f), +0x10..18 mode flags. Saving with it on keeps them.
 - **Sound engine thread / guitar audio**: the game's sound engine is an object whose tick (vtable entry,

@@ -18,7 +18,7 @@ typedef struct { int32_t time, score; } Point;
 typedef struct { uint32_t stage, variant, mode, inputs, profile, censored; } Key;
 typedef struct { Point points[MAX_POINTS]; uint32_t count; int final_score, end_time; } Trace;
 static struct {
-    int active, pending, assisted, overflow, last_time, completed;
+    int active, pending, assisted, overflow, last_time, completed, ended;
     Key key;
     Trace run[2], best[2];
     int human[2];
@@ -132,6 +132,7 @@ static void sample_scores(int tm) {
     state.assisted |= g_autoplay || g_autoplay_used || mem_r32(REPLAY_MODE) != 0;
     uint32_t flags = mem_r32(SONG_FLAGS);
     state.completed |= tm > 0 && (flags & 8) && !(flags & 0x21);
+    state.ended |= tm > 0 && (flags & 0x29); /* actual end/failure/Start, not a temporary HUD/CD gap */
     for (int p = 0; p < 2; p++) {
         /* Native replay input sources are COM slots; still expose their score timeline to diagnostics.
            They remain assisted and cannot write references. */
@@ -149,15 +150,18 @@ static void sample_scores(int tm) {
 
 void score_delta_tick(void) {
     if (!state.active) return;
-    if (!song_context()) { state.active = 0; return; }
+    if (!song_context()) return; /* a transient signature/loading gap must not permanently suspend capture */
     int tm = (int32_t)mem_r32(SONG_TIME);
     if (tm < 0 || tm > MAX_TIME) return;
     if (mem_r32(SCENE) != state.key.stage || mem_r32(SCENE + 4) != state.key.variant) {
         state.active = state.pending = 0; return;
     }
     if (tm < state.last_time) {
-        if (log_on) LOGI("score delta: clock reset %d -> %d; retaining trace for results", state.last_time, tm);
-        state.active = 0; return; /* ending movie; only the attempt initializer discards a retry */
+        if (state.ended) {
+            if (log_on) LOGI("score delta: clock reset %d -> %d; retaining trace for results", state.last_time, tm);
+            state.active = 0; /* ending movie/prompt; only the attempt initializer discards a retry */
+        }
+        return; /* transient CD clock reset: hold the last sample, then resume when song time returns */
     }
     sample_scores(tm);
 }
@@ -185,13 +189,13 @@ static int reference_score(int p, int time) {
     return t->points[lo].score;
 }
 
-/* Native 12x12 S_PLUS0 / S_MINUS0 sprites are resident next to the score digits in every song.
+/* Native 12x12 S_PLUS0 / S_MINUS0 / S_PLMI0 sprites are resident next to the score digits in every song.
    They share the digits' palette, so the same modulation gives a consistent blue/red tint. */
-static void draw_sign(const GpuPrim *base, int positive, int x, void (*emit)(const GpuPrim *)) {
+static void draw_sign(const GpuPrim *base, int delta, int x, void (*emit)(const GpuPrim *)) {
     GpuPrim q = *base;
     q.w = q.h = 12;
     q.v[0].x = (int16_t)x;
-    q.v[0].u = positive ? 196 : 172;
+    q.v[0].u = delta > 0 ? 196 : delta < 0 ? 172 : 184;
     q.v[0].v = 12;
     emit(&q);
 }
@@ -200,8 +204,11 @@ void score_delta_draw(const GpuPrim *p, void (*emit)(const GpuPrim *)) {
     /* Match the ones digit of the native score counter, not unrelated numbers or menu text. */
     if (p->type != PRIM_RECT || !p->textured || p->w != 10 || p->h != 12 ||
         (p->texpage & 0x19F) != 0x1E || p->v[0].v || p->v[0].u < 32 || p->v[0].u > 122 ||
-        (p->v[0].u - 32) % 10 || p->v[0].y - p->clip_y0 != 170 || !song_context() || mem_r32(REPLAY_MODE) == 2) return;
-    int x = p->v[0].x - p->clip_x0;
+        (p->v[0].u - 32) % 10 || (p->v[0].y != 170 && p->v[0].y != 426) ||
+        !song_context() || mem_r32(REPLAY_MODE) == 2) return;
+    /* Clipping can tighten for a cinematic break; its top-left corner is not the HUD's origin.
+       Both native display buffers are at x=0, with y=0/256. */
+    int x = p->v[0].x;
     if (x != 52 && x != 292) return;
     if (!state.active && !state.pending) begin_run();
     if (!state.active) return;
@@ -222,7 +229,7 @@ void score_delta_draw(const GpuPrim *p, void (*emit)(const GpuPrim *)) {
     q.v[0].r = q.v[0].g = q.v[0].b = 128;
     if (delta > 0) { q.v[0].r = 32; q.v[0].g = 64; }
     if (delta < 0) { q.v[0].g = q.v[0].b = 32; }
-    draw_sign(&q, delta >= 0, x, emit);
+    draw_sign(&q, delta, x, emit);
     x += 11;
     for (const char *s = digits; *s; s++, x += 9) {
         q.v[0].x = (int16_t)x; q.v[0].u = (uint8_t)(32 + (*s - '0') * 10);
