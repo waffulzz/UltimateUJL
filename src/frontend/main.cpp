@@ -1153,7 +1153,7 @@ int main(int argc, char **argv) {
         gl_check_main("frame upload");
         stage(T_UPLOAD);
 
-        if (g_cd_fast_load && rt_load_turbo_active() && !g_script_quit) {
+        if (g_cd_fast_load && rt_load_turbo_active() && !g_script_quit && !g_pause_menu.visible) {
             // fast-forwarding through a load: keep showing the last picture (no loading screen) and stay responsive
             SDL_Delay(1);
             continue;
