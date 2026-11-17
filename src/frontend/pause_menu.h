@@ -6,6 +6,7 @@
 enum class PauseAction { None, Open, Resume, Again, Settings };
 struct PauseMenu {
     bool visible = false;
+    bool replay = false;
     int selection = 0;
     uint16_t previous = 0, blocked = 0;
     PauseAction input(uint16_t held, bool available, bool confirm_cross, bool settings_open);

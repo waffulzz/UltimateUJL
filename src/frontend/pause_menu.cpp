@@ -99,7 +99,7 @@ void PauseMenu::rasterize(std::vector<uint32_t> &pixels) const {
     rect(pixels, 4, 4, width - 12, height - 12, color(16, 16, 28, 245));
     text(pixels, "PAUSE", 20, color(255, 232, 112));
     rect(pixels, 28, 45, width - 56, 1, color(112, 112, 128));
-    const char *items[] = {"RESUME", "AGAIN?", "SETTINGS"};
+    const char *items[] = {"RESUME", replay ? "EXIT REPLAY" : "AGAIN?", "SETTINGS"};
     for (int i = 0; i < 3; i++) {
         if (i == selection) {
             rect(pixels, 24, 56 + i * 28, width - 48, 24, color(48, 56, 100));

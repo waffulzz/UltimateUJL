@@ -68,6 +68,7 @@ static bool g_show_vram;
 // thread ~5% on an iPhone 16 Pro.
 static std::atomic<bool> g_need_native{true};
 static std::atomic<bool> g_pause_available{false};
+static std::atomic<bool> g_pause_replay{false};
 static std::atomic<int> g_again_request{0};
 static PauseMenu g_pause_menu;
 static bool g_pause_font_captured;
@@ -166,6 +167,7 @@ extern "C" void host_vblank(void) {
     int vb = ++g_vblanks;
     gpu_rec_vblank();
     g_pause_available = pause_song_context();
+    g_pause_replay = mem_r32(0x80071dd0) == 1;
     if (!g_script.empty()) g_script_held = script_vblank(vb);
     g_pad_buttons[0] = g_input_buttons.load();
     static int again_frames;
@@ -213,6 +215,7 @@ static void sync_pause_audio() {
 static void pause_action(PauseAction action) {
     if (action == PauseAction::None) return;
     if (action == PauseAction::Open) {
+        g_pause_menu.replay = g_pause_replay.load();
         g_pause_font_captured = false;
         rt_pause_set(RT_PAUSE_USER, 1);
         fprintf(stderr, "pause: requested at vblank %d\n", g_vblanks.load());
@@ -220,7 +223,8 @@ static void pause_action(PauseAction action) {
         if (action == PauseAction::Again) g_again_request = 1;
         g_input_buttons = 0xffff;
         rt_pause_set(RT_PAUSE_USER, 0);
-        fprintf(stderr, "pause: %s at vblank %d\n", action == PauseAction::Again ? "AGAIN?" : "resume", g_vblanks.load());
+        const char *label = action == PauseAction::Again ? (g_pause_menu.replay ? "exit replay" : "AGAIN?") : "resume";
+        fprintf(stderr, "pause: %s at vblank %d\n", label, g_vblanks.load());
     } else if (action == PauseAction::Settings) g_set.show_overlay = true;
     sync_pause_audio();
 }

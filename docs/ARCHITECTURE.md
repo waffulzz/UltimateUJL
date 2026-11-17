@@ -489,6 +489,7 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   Select still cycles guitar effects. Resume returns to the exact attempt; AGAIN? resumes and injects a six-vblank
   native Start press, opening the original retry/quit prompt with the existing Circle/Cross setting. Settings
   opens the port settings while keeping the song paused; closing Settings returns to the pause menu.
+  During a replay the second item reads EXIT REPLAY and uses the original Start-to-exit path instead.
 - `runtime/pause.c` parks the current guest baton owner at `clock_update`, stopping the scheduler, SPU, CD song
   clock and all other guest threads together. The elapsed host time is added to `host_t0` before clock updates
   resume. Pausing presentation alone would continue the song or cause catch-up on resume. The SDL audio device
