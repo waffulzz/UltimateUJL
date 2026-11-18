@@ -53,42 +53,48 @@ using Clock = std::chrono::steady_clock;
 class Pipe {
 public:
     ~Pipe() { close(); }
+    // UJL_DISCORD_IPC_PATH names one endpoint instead of searching (tests/discord_test.cpp's fake Discord).
     bool open() {
         close();
+        if (const char *only = getenv("UJL_DISCORD_IPC_PATH")) return open_path(only);
 #ifdef _WIN32
-        for (int i = 0; i < 10; i++) {
-            char name[64];
-            snprintf(name, sizeof name, "\\\\.\\pipe\\discord-ipc-%d", i);
-            h_ = CreateFileA(name, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
-            if (h_ != INVALID_HANDLE_VALUE) return true;
-        }
-        h_ = INVALID_HANDLE_VALUE;
-        return false;
+        for (int i = 0; i < 10; i++)
+            if (open_path(("\\\\.\\pipe\\discord-ipc-" + std::to_string(i)).c_str())) return true;
 #else
-        // Discord puts its socket in the runtime/temp folder; Flatpak and Snap builds one level down.
+        // Discord puts its socket in the runtime folder (Linux) or the per-user temp folder (macOS: $TMPDIR);
+        // Flatpak and Snap builds of the client one folder down.
         const char *bases[] = {getenv("XDG_RUNTIME_DIR"), getenv("TMPDIR"), getenv("TMP"), getenv("TEMP"), "/tmp"};
-        const char *subs[] = {"", "app/com.discordapp.Discord/", "snap.discord/", ".flatpak/com.discordapp.Discord/xdg-run/"};
+        const char *subs[] = {"", "app/com.discordapp.Discord/", "app/com.discordapp.DiscordCanary/",
+                              "app/dev.vencord.Vesktop/", "snap.discord/", "snap.discord-canary/"};
         for (const char *base : bases) {
             if (!base || !*base) continue;
+            std::string b = base;
+            if (b.back() != '/') b += '/';
             for (const char *sub : subs)
-                for (int i = 0; i < 10; i++) {
-                    sockaddr_un addr{};
-                    addr.sun_family = AF_UNIX;
-                    std::string b = base;
-                    if (b.back() != '/') b += '/';
-                    std::string path = b + sub + "discord-ipc-" + std::to_string(i);
-                    if (path.size() >= sizeof addr.sun_path) continue;
-                    memcpy(addr.sun_path, path.c_str(), path.size() + 1);
-                    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-                    if (fd < 0) return false;
-#ifdef SO_NOSIGPIPE
-                    int one = 1;
-                    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
-#endif
-                    if (connect(fd, (sockaddr *)&addr, sizeof addr) == 0) { fd_ = fd; return true; }
-                    ::close(fd);
-                }
+                for (int i = 0; i < 10; i++)
+                    if (open_path((b + sub + "discord-ipc-" + std::to_string(i)).c_str())) return true;
         }
+#endif
+        return false;
+    }
+    bool open_path(const char *path) {
+#ifdef _WIN32
+        h_ = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        return h_ != INVALID_HANDLE_VALUE;
+#else
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        size_t n = strlen(path);
+        if (n >= sizeof addr.sun_path) return false;
+        memcpy(addr.sun_path, path, n + 1);
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) return false;
+#ifdef SO_NOSIGPIPE   // macOS: a write to a closed socket must fail, not raise SIGPIPE (Linux: MSG_NOSIGNAL)
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+#endif
+        if (connect(fd, (sockaddr *)&addr, sizeof addr) == 0) { fd_ = fd; return true; }
+        ::close(fd);
         return false;
 #endif
     }

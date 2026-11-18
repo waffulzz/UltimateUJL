@@ -870,6 +870,10 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   kept. Scripted runs leave it off unless UJL_DISCORD=1; UJL_DISCORD_CLIENT_ID overrides the ID, UJL_DISCORD_LOG=1
   logs each change. Checked on screen: menus -> Stage 1 Lammy -> GOOD -> COOL (Auto-COOL) -> Paused -> COOL, all
   accepted by Discord. Submodes 1-5 on stages 2-7 not yet seen in a run. No images (the app has no art assets).
+  Linux/macOS: same code over a Unix socket (search adds Canary/Vesktop Flatpak and Snap folders; macOS sets
+  SO_NOSIGPIPE, Linux sends with MSG_NOSIGNAL). ujl_discord_test (CI on all three desktop OSes) runs a fake
+  Discord: on POSIX at discord-ipc-0 in a temp XDG_RUNTIME_DIR/TMPDIR, so the real search is exercised; on
+  Windows at a private pipe named by UJL_DISCORD_IPC_PATH (the real Discord may hold discord-ipc-0).
 - **UJL NOW! import in the setup wizard + arcade audio (user request 2026-11-15)**: the disc import step also accepts
   the UJL NOW! arcade CD image (CloneCD .img/.ccd) and ROM set. When imported, all of Lammy's guitar sounds and
   PaRappa's voice lines are replaced with the arcade versions (much higher quality than the PS1 samples). Needs:

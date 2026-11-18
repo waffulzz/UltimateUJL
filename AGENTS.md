@@ -79,6 +79,8 @@ Verification primarily means running the game headless or scripted and inspectin
 `ujl_replay_test` similarly checks asynchronous replay export/import with synthetic data. The iOS simulator-only
 `ujl_ios_picker_test` app checks native UIKit picker lifetimes; CI boots an iPhone 18 Pro with iOS 27.2 to run it.
 `ujl_pause_test` checks guest suspension, nested pause reasons, navigation and held-button quarantine.
+`ujl_discord_test` runs Discord Rich Presence against a fake Discord (Unix socket on Linux/macOS, named pipe on
+Windows): handshake, ping, activity updates from synthetic RAM, clear + close at shutdown.
 
 - **CI smoke test** (`tests/smoke/smoke.py`, run by `.github/workflows/ci.yml` on Windows, Linux and macOS). CI has no
   disc, so it assembles a small synthetic PS-X EXE onto a generated ISO image, recompiles it with `gen.py`, builds
