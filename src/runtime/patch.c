@@ -750,6 +750,7 @@ void hook_credits_hold(CPU *c, uint32_t fn) {
 
 /* Called for every sector read: substitute patched user data. */
 void patch_sector(uint32_t lba, uint8_t sec[2352]) {
+    { int arcade_stage1_xa_sector(uint32_t lba, uint8_t sec[2352]); if (arcade_stage1_xa_sector(lba, sec)) return; }
     if (song_nsec && lba - song_jp_lba < song_nsec && sec[17] == CREDITS_XA_CHANNEL && (sec[18] & 0x04)) {
         song_last_ch7 = lba - song_jp_lba + 1;
         uint8_t us[2352];

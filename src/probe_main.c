@@ -287,6 +287,7 @@ int main(int argc, char **argv) {
         const char *ip = getenv("PROBE_IMPORT");
         if (ip) { char msg[256]; const char *m = getenv("PROBE_IMPORT_MODE"); memcard_import(0, ip, m ? atoi(m) : 0, msg, sizeof msg); rt_log("import: %s", msg); }
     }
+    { extern bool arcade_disc_open(const char *); const char *cd = getenv("UJL_ARCADE_CD"); if (cd && !arcade_disc_open(cd)) rt_log("arcade cd: cannot open %s", cd); }
     const char *arcade = getenv("UJL_ARCADE_ROMS");
     if (arcade && !arcade_audio_init(arcade)) { rt_log("arcade audio: %s", SDL_GetError()); return 1; }
     if (arcade && !arcade_stage1_init(arcade)) { rt_log("arcade Stage 1: %s", SDL_GetError()); return 1; }

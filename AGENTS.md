@@ -132,7 +132,10 @@ Verification primarily means running the game headless or scripted and inspectin
   The game log is `build/cmake/ujl.log`.
   Live score comparisons store completed unassisted PB traces beside the executable in `score_traces/`.
   `UJL_SCORE_TRACE_DIR=path` isolates reference files for testing; `UJL_SCORE_LOG=1` logs their sampling/loading.
-  `UJL_CARD_LOG=1` logs card file operations and guest callers. Replay files default to `-DUJL_REPLAY_FILES=ON`
+  `UJL_CARD_LOG=1` logs card file operations and guest callers. `UJL_SPU_VOICE_RMS=1` logs each SPU voice's output
+  level once a second; `UJL_FB_DUMP=file` writes capture voices 1/3 and the other voices' mix per sample. The probe
+  takes the arcade ROM set and CD from `UJL_ARCADE_ROMS` / `UJL_ARCADE_CD`; `UJL_FORCE_SCENE=1,N` (N 1..5) with
+  `UJL_AUTOPLAY=1` plays a restored Stage 1 mode from the Stage 1 story presses. Replay files default to `-DUJL_REPLAY_FILES=ON`
   on desktop and iOS (native Files import/export); the setting/ini key is `replay_files`. The probe opts in with
   `UJL_REPLAY_FILES=1`. `UJL_REPLAY_OPEN=path` / `UJL_REPLAY_SAVE=path` answer a file request without a dialog
   for scripted tests (empty value cancels; errors are logged and cancel). Use only disposable output paths/cards.

@@ -3,6 +3,7 @@
 #include "psx.h"
 #include "arcade_audio.h"
 #include <stdlib.h>
+#include <math.h>
 
 #define SPU_RATE 44100
 #define CYCLES_PER_SAMPLE (PSX_CLOCK / SPU_RATE) /* 768 */
@@ -53,6 +54,7 @@ static uint32_t diag_samples;
 static int32_t diag_rvb_peak;
 static int32_t vpeak[24];
 static uint64_t kon_count[24];
+static double voice_energy[24];         /* UJL_SPU_VOICE_RMS */
 
 static const int f_pos[5] = {0, 60, 115, 98, 122};
 static const int f_neg[5] = {0, 0, -52, -55, -60};
@@ -310,6 +312,7 @@ static void mix(int frames) {
         int32_t L = 0, R = 0;
         int32_t rinl = 0, rinr = 0; /* reverb input: voices with reverb enabled (EON) */
         int32_t cap1 = 0, cap3 = 0; /* voice 1/3 output after ADSR, before volume (capture buffers) */
+        int32_t others = 0;         /* UJL_FB_DUMP: left output of every voice but 1 and 3 */
         if (spu_on) {
             for (int n = 0; n < 24; n++) {
                 Voice *vc = &v[n];
@@ -326,6 +329,8 @@ static void mix(int frames) {
                 }
                 L += vl;
                 R += vr;
+                voice_energy[n] += (double)vl * vl + (double)vr * vr;
+                if (n != 1 && n != 3) others += vl;
                 if ((n < 16 ? REG(0x198) >> n : REG(0x19A) >> (n - 16)) & 1) { rinl += vl; rinr += vr; }
             }
         }
@@ -358,6 +363,8 @@ static void mix(int frames) {
             if (ol > diag_rvb_peak) diag_rvb_peak = ol; else if (-ol > diag_rvb_peak) diag_rvb_peak = -ol;
             { static FILE *dump; static int init; if (!init) { init = 1; const char *e = getenv("UJL_RVB_DUMP"); if (e) dump = fopen(e, "wb"); }
               if (dump) { int16_t x[3] = { sat16(ol), sat16(cap1), sat16(cap3) }; fwrite(x, 2, 3, dump); } }
+            { static FILE *dump; static int init; if (!init) { init = 1; const char *e = getenv("UJL_FB_DUMP"); if (e) dump = fopen(e, "wb"); }
+              if (dump) { int16_t x[3] = { sat16(cap1), sat16(cap3), sat16(others) }; fwrite(x, 2, 3, dump); } }
         }
         if (!unmuted) L = R = 0;
         L = (L * vol_reg(REG(0x180))) >> 14;
@@ -372,6 +379,17 @@ static void mix(int frames) {
         if (diag_kon) {
             extern int g_xa_filter_chan;
             LOGI("audio: keyed %06x  vol>0 %06x  vol=0 %06x  xa chan %d  reverb peak %d", diag_kon, diag_volnz, diag_volz, g_xa_filter_chan, diag_rvb_peak);
+        }
+        {   /* UJL_SPU_VOICE_RMS=1: each voice's output level (after its volume) over the last second, dry mix */
+            static int st = -1;
+            if (st < 0) st = getenv("UJL_SPU_VOICE_RMS") != NULL;
+            if (st) {
+                char line[512]; int len = 0;
+                for (int n = 0; n < 24; n++)
+                    if (voice_energy[n] > 0) len += snprintf(line + len, sizeof line - (size_t)len, " v%02d=%.0f", n, sqrt(voice_energy[n] / (2.0 * SPU_RATE)));
+                if (len) LOGI("spu rms:%s", line);
+            }
+            memset(voice_energy, 0, sizeof voice_energy);
         }
         diag_kon = diag_volnz = diag_volz = 0;
         diag_rvb_peak = 0;

@@ -317,7 +317,8 @@ static const Feature k_features[] = {
     {"Option: censored USA versions of Stages 1, 5 and 6", NEED_USA, false},
     {"Arcade attract movies", NEED_ARCADE_CD, true},
     {"Joe Chin cutscenes", NEED_ARCADE_CD, true},
-    {"Stage 1 versus / PaRappa content", NEED_ARCADE_CD, true},
+    {"Stage 1 versus / co-op / PaRappa modes", NEED_ARCADE_ROMS, false},
+    {"Their arcade song endings", NEED_ARCADE_CD | NEED_ARCADE_ROMS, false},
     {"Arcade guitar sounds and voice lines", NEED_ARCADE_ROMS, false},
 };
 

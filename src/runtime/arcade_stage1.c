@@ -28,9 +28,12 @@ static const GameplaySource gameplay_sources[MODE_COUNT] = {
    slot (bits 0..2 button, 3..5 owner: 1/2 players, 3 teacher). Separate from the scoring chart. */
 static const uint32_t bar_grids[MODE_COUNT] = {0x20f64, 0x24224, 0x24bb4, 0x20dc8, 0x24b0c, 0x242cc};
 /* Face texture programs started by scene op 7 (lip sync, blinks): {records, count} per program, records
-   {s32 time, u16 *resource_ids, s32 id_count}. Program numbers differ per mode. */
+   {s32 time, u16 *resource_ids, s32 id_count}. Program numbers differ per mode. The PaRappa modes' tables hold
+   two empty programs (a records pointer with no records) before PaRappa's last 17 mouth programs; counting
+   stopped at them, and the engine ignores op 7 for a program >= the count, so most of his per-press lip sync
+   (scene table 1, one row per voice line) never started. */
 static const struct { uint32_t table; unsigned count; } face_sources[MODE_COUNT] = {
-    {0x19e94, 53}, {0x1ab74, 115}, {0x1a914, 87}, {0x1a07c, 79}, {0x1a86c, 87}, {0x1ac1c, 115},
+    {0x19e94, 72}, {0x1ab74, 115}, {0x1a914, 106}, {0x1a07c, 79}, {0x1a86c, 106}, {0x1ac1c, 115},
 };
 typedef struct { uint32_t roots[3]; unsigned counts[3]; } SceneSource;
 static const SceneSource scene_sources[MODE_COUNT] = {
@@ -150,7 +153,7 @@ bool arcade_stage1_faces(unsigned mode, uint8_t *out, size_t capacity, uint32_t 
         for (unsigned i = 1; i < count; i++) {
             uint32_t records = le32(src + root + i * 8), n = le32(src + root + i * 8 + 4);
             if (!records && !n) continue;
-            if (records < base || !n || n > 64 || !include_range(records - base, n * 12u, limit, &start, &end))
+            if (records < base || n > 64 || !include_range(records - base, n * 12u, limit, &start, &end))
                 goto invalid;
             for (unsigned j = 0; j < n; j++) {
                 size_t record = records - base + j * 12u;

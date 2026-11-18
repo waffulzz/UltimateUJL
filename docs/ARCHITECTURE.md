@@ -998,3 +998,30 @@ share the image rectangle (832,0)/(832,73) with Rammy's BL_VA*.TIM (identical pi
 uploaded only PA*/LA*/BL* TIMs, so VACUUM was missing: Lammy's vacuum borrowed BL_VA's image in Rammy modes, and
 PaRappa's hose sampled stale VRAM (the "streaks", wrongly blamed on a face overlay before). VACUUM* now uploads
 whenever Lammy or PaRappa is present.
+Song endings and lip sync (2026-11-17 follow-up).
+- Endings: at song end the shared stage code F_8001c8cc (mode 0x80078aec) leaves solo/versus on the singing
+  channel (the ending follows in the stream) and switches co-op to channel 4/5 at COOL or 6/7 at GOOD, the odd one
+  when 0x80078b0c is 1 (PaRappa co-op); XA requests go through F_8001626c into 0x801a2348+47, applied at vblank by
+  F_8001506c. The board program (ul1vera.2l/2p interleaved, routine at program +0x3d540, setter 0x8001f810) does
+  the same. The arcade CD's /S1/ST1.XA has the console file's layout sector for sector (file 1, channel = index % 8,
+  same song clock) but its own endings from per-channel sector 1245 on and 29 more sectors per channel; its channel 7
+  is a co-op ending where the JP file has the credits song, and its channel 2/3/4/6 vocal section 878..924 is the
+  USA (censored) take. So restored modes played console Lammy's endings and, in Lammy/PaRappa co-op, the credits
+  song. arcade_stage1_xa_sector (first in patch_sector, only while a restored mode is active) now serves the arcade
+  file's subheader + audio from file sector 1245*8 on, past the JP file's end only to the XA stream
+  (cd_xa_streaming); before that the JP sectors and the censorship setting stay. Without the arcade CD the console
+  endings remain. The arcade CD is opened from ujl.ini arcade_cd (probe: UJL_ARCADE_CD).
+- Lip sync: the press handler (stage_frame -> F_80017a10) passes the player block's lip row (+4) and sound command
+  (+6) to the stage callback at stage entry +12 (COMOD1.SNG O01_801cd0ac -> F_8002b9d0), which runs that row of scene
+  table 1 (timeline +2232): op 7 on PaRappa (target 8) with his mouth program. op 7 ignores programs >= the face
+  count (F_8002b0e0). The PaRappa modes' face tables have two empty programs (records pointer, 0 records) at 53/54
+  (87/88 in the multiplayer slots) followed by 17 more mouth programs; the loader stopped at the first empty one, so
+  most voice lines (programs 53..71 / 87..105) never moved his mouth. Counts are now 72/106 and empty programs are
+  accepted: Pa solo face program starts 55 -> 152 over the same 92 s. Face block: timeline +192: ID ring 0..1023,
+  read/write +1024/+1028, 24 program slots of 32 bytes from +1032 (active +16), table +1800, IDs per frame +1808.
+- Player sounds in the rap overlay: every voice/guitar command keys a capture voice (1 or 3, alternating, volume 0)
+  and the guitar feedback stream turns the capture into the audible ring voice (0x6ed0) only while the button is
+  held. Measured with Autoplay (probe, UJL_FB_DUMP): both players' ring output ~3000 RMS, guitar and PaRappa voice
+  arcade gains 0.9..1.4. A reported "Lammy's guitar much louder than Rammy/PaRappa" in versus/co-op is not
+  reproduced yet. Debug: UJL_SPU_VOICE_RMS=1 (per-voice level each second), UJL_FB_DUMP=file (int16 cap1, cap3, all
+  other voices per sample).

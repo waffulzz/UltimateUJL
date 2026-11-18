@@ -11,7 +11,7 @@
 #endif
 
 typedef struct { FILE *f; uint32_t sectors; } DiscImg;
-static DiscImg main_disc, aux_disc;
+static DiscImg main_disc, aux_disc, arcade_disc;
 
 static bool img_open(DiscImg *d, const char *path) {
     if (d->f) fclose(d->f);
@@ -117,6 +117,12 @@ bool aux_disc_ready(void) { return aux_disc.f != NULL; }
 bool aux_disc_read_file(const char *path, uint8_t **data, uint32_t *size) { return aux_disc.f && img_read_file(&aux_disc, path, data, size); }
 bool aux_disc_find_file(const char *path, uint32_t *lba, uint32_t *size) { return aux_disc.f && img_find_file(&aux_disc, path, lba, size); }
 bool aux_disc_read_sector(uint32_t lba, uint8_t out[2352]) { return img_read_sector(&aux_disc, lba, out); }
+
+/* UJL NOW! arcade CD (raw image the setup wizard imported): asset source only (its Stage 1 song XA) */
+bool arcade_disc_open(const char *path) { return img_open(&arcade_disc, path); }
+bool arcade_disc_ready(void) { return arcade_disc.f != NULL; }
+bool arcade_disc_find_file(const char *path, uint32_t *lba, uint32_t *size) { return arcade_disc.f && img_find_file(&arcade_disc, path, lba, size); }
+bool arcade_disc_read_sector(uint32_t lba, uint8_t out[2352]) { return img_read_sector(&arcade_disc, lba, out); }
 
 /* Identification (setup wizard): read the primary volume descriptor or one file of any image without touching the
    main or auxiliary disc. False for unreadable files and images without raw 2352-byte Mode 2 sectors. */

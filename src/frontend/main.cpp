@@ -33,6 +33,7 @@ extern "C" {
 bool rt_boot(const char *disc_path);
 bool rt_probe_disc(const char *path);
 bool aux_disc_open(const char *path);
+bool arcade_disc_open(const char *path);
 bool disc_image_boots(const char *path, const char *exe_name);
 void rt_run(void);
 void gpu_soft_install(void);
@@ -876,7 +877,11 @@ int main(int argc, char **argv) {
         } else
             fprintf(stderr, "usa disc: %s (Japanese title logo and menus)\n", usa.empty() ? "not imported" : "missing");
     }
-    if (!g_discs.arcade_cd.empty()) fprintf(stderr, "arcade cd: %s (not used yet)\n", g_discs.arcade_cd.c_str());
+    if (!g_discs.arcade_cd.empty()) {   // its Stage 1 song XA supplies the restored modes' song endings
+        if (file_exists(g_discs.arcade_cd) && arcade_disc_open(g_discs.arcade_cd.c_str()))
+            fprintf(stderr, "arcade cd: %s\n", g_discs.arcade_cd.c_str());
+        else fprintf(stderr, "arcade cd: %s (missing)\n", g_discs.arcade_cd.c_str());
+    }
     g_arcade_roms_path = g_discs.arcade_roms;
     if (!g_discs.arcade_roms.empty()) {
         if (arcade_audio_init(g_discs.arcade_roms.c_str())) fprintf(stderr, "arcade audio: verified sound ROMs loaded\n");

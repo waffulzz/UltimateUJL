@@ -40,6 +40,50 @@ void hook_stage1_scene_route(CPU *c, uint32_t fn) {
 static uint32_t read32(const uint8_t *p) { return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
 static uint16_t read16(const uint8_t *p) { return p[0] | (uint16_t)p[1] << 8; }
 
+/* Song endings. At song end the shared stage code (F_8001c8cc; the board's copy is identical) leaves solo and versus
+   on the singing channel and switches co-op to channel 4/5 (COOL) or 6/7 (GOOD), the odd one when 0x80078b0c is 1
+   (PaRappa co-op). Those endings are recorded on the arcade CD's /S1/ST1.XA, which has the console file's 8-channel
+   layout sector for sector but its own endings from per-channel sector 1245 on (29 sectors longer). The JP file has
+   console Lammy's endings there and the credits song on channel 7, so restored modes heard Lammy's solo line and
+   the credits song. Before 1245 the files match except the censored vocal section (arcade = USA take), so the JP
+   sectors and the censorship setting stay in charge there. Subheader and audio only: the header is the JP disc's
+   sector address, which the game reads back as its song clock. */
+bool arcade_disc_ready(void);
+bool arcade_disc_find_file(const char *path, uint32_t *lba, uint32_t *size);
+bool arcade_disc_read_sector(uint32_t lba, uint8_t out[2352]);
+bool disc_find_file(const char *path, uint32_t *lba, uint32_t *size);
+int cd_xa_streaming(void);
+enum { XA_CHANNELS = 8, XA_ENDING = 1245 };
+int arcade_stage1_xa_sector(uint32_t lba, uint8_t sec[2352]) {
+    static int state;   /* 0 not checked, 1 usable, -1 not available */
+    static uint32_t jp_lba, jp_n, ar_lba, ar_n;
+    if (!restoring) return 0;
+    if (!state) {
+        uint32_t js, as;
+        state = -1;
+        if (!arcade_disc_ready() || !disc_find_file("S1/ST1.XA", &jp_lba, &js) ||
+            !arcade_disc_find_file("S1/ST1.XA", &ar_lba, &as) || as < js) return 0;
+        jp_n = js / 2048; ar_n = as / 2048;
+        uint8_t a[2352];
+        for (uint32_t i = 0; i < 64; i++)   /* same interleave: file 1, channel i % 8, audio */
+            if (!arcade_disc_read_sector(ar_lba + i, a) || a[16] != 1 || a[17] != i % XA_CHANNELS || !(a[18] & 0x04)) {
+                LOGI("arcade Stage 1: the arcade CD's ST1.XA layout is unexpected; keeping the console endings");
+                return 0;
+            }
+        state = 1;
+        LOGI("arcade Stage 1: song endings from the arcade CD (%u sectors, console %u)", ar_n, jp_n);
+    }
+    uint32_t i = lba - jp_lba;
+    if (state < 0 || i >= ar_n || i < XA_ENDING * XA_CHANNELS) return 0;
+    /* Past the JP file the drive reads the next file: serve the arcade tail only to the XA stream. */
+    if (i >= jp_n && !cd_xa_streaming()) return 0;
+    uint8_t a[2352];
+    if (!arcade_disc_read_sector(ar_lba + i, a) || !(a[18] & 0x04)) return 0;
+    if (i < jp_n && (a[16] != sec[16] || a[17] != sec[17])) return 0;
+    memcpy(sec + 16, a + 16, 2352 - 16);
+    return 1;
+}
+
 static bool read_guitar_bank(void) {
     if (guitar_vh && guitar_vb) return true;
     uint32_t size;
@@ -354,7 +398,8 @@ void hook_stage1_scene_cues(CPU *c, uint32_t fn) {
     mem_w32(timeline + 128, mem_r32(table + 8));
     mem_w32(timeline + 132, mem_r32(table + 12));
     mem_w32(timeline + 140, 0); mem_w32(timeline + 144, 1); mem_w32(timeline + 148, 0);
-    LOGI("arcade Stage 1: scene cues, %zu bytes at %08x; %u face programs", scene.size, buffer, faces.count);
+    LOGI("arcade Stage 1: scene cues, %zu bytes at %08x; %u face programs; timeline %08x", scene.size, buffer,
+         faces.count, timeline);
 }
 /* Lyric tracks: one per language, descriptor {0, end 0x6600, records}; records {duration, end, text}.
    COMOD1.SNG carries PaRappa's lines. Modes with Lammy sing Lammy's vocal channel, so point each COMOD1.SNG

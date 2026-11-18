@@ -13,6 +13,7 @@ static uint8_t stat = 0x02;   /* motor on */
 static uint8_t mode;
 static uint8_t filter_file, filter_chan;
 int g_xa_filter_chan;
+int cd_xa_streaming(void) { return (mode & 0x40) != 0; }   /* XA-ADPCM playback enabled (a song or movie is streaming) */
 static uint32_t setloc_lba, read_lba;
 static int setloc_pending;
 static int reading;           /* 1 ReadN/ReadS active */
