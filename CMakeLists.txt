@@ -135,7 +135,7 @@ target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
 
 # The game
 set(UJL_FRONTEND_SOURCES src/frontend/main.cpp src/frontend/discs.cpp src/frontend/gl_funcs.cpp src/frontend/hw_renderer.cpp
-  src/frontend/touch_pad.cpp src/frontend/pause_menu.cpp)
+  src/frontend/touch_pad.cpp src/frontend/pause_menu.cpp src/frontend/discord_rpc.cpp)
 if(UJL_IOS)
   # OpenGL ES 3.0 (UIKit EAGL via SDL), the same renderer with GLSL ES shaders (hw_renderer.cpp picks them at run time)
   set(UJL_IOS_BUNDLE_ID "io.github.waffulzz.UltimateUJL" CACHE STRING "iOS bundle identifier")
@@ -204,6 +204,9 @@ else()
   add_executable(ujl ${UJL_FRONTEND_SOURCES} ${UJL_ICON_RC})
   target_link_libraries(ujl PRIVATE runtime imgui OpenGL::GL)
 endif()
+# Discord Rich Presence: the Discord application whose name shows after "Playing" (public ID, not a secret).
+set(UJL_DISCORD_CLIENT_ID "1571578704587526204" CACHE STRING "Discord application ID for Rich Presence (empty = none)")
+target_compile_definitions(ujl PRIVATE UJL_DISCORD_CLIENT_ID="${UJL_DISCORD_CLIENT_ID}")
 if(APPLE AND NOT UJL_IOS)
   # macOS ships OpenGL 4.1 core, deprecated but working; keep the build log quiet about it
   target_compile_definitions(ujl PRIVATE GL_SILENCE_DEPRECATION)

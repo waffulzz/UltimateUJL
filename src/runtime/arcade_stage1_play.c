@@ -37,6 +37,8 @@ void hook_stage1_scene_route(CPU *c, uint32_t fn) {
         mem_w32(entry + i * 4, mem_r32(0x8005b3e0 + i * 4));
     LOGI("arcade Stage 1: selected submode %u, source slot %u", submode, active_slot);
 }
+/* The restored mode playing now (board slot 0..5), or -1 when Stage 1 is the console's (Discord presence). */
+int arcade_stage1_active_slot(void) { return restoring ? (int)active_slot : -1; }
 static uint32_t read32(const uint8_t *p) { return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
 static uint16_t read16(const uint8_t *p) { return p[0] | (uint16_t)p[1] << 8; }
 

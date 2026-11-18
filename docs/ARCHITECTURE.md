@@ -853,10 +853,23 @@ Build: `source tools/env.sh && bash tools/prepare.sh && cmake -S . -B build/cmak
   between consecutive frames' primitive lists (match prims frame to frame, lerp vertices), with a fallback
   to plain 60 when matching fails. Research item: may not be clean for every scene.
 - SPU noise (reverb and memory card saves are done; Stage 8 has no captions).
-- **Discord Rich Presence (user request 2026-11-15)**: show what's being played (menu / stage name / Lammy or
-  PaRappa mode, maybe the rating), optional and off-able in settings. Read the state from game RAM (current scene
-  entry at 0x801a23ec). Talk to the Discord client over its local IPC pipe (discord-ipc-0) directly, so no SDK
-  has to be shipped.
+- **Discord Rich Presence (done, src/frontend/discord_rpc.cpp; user request 2026-11-15)**: Settings > Discord
+  "Show what I'm playing on Discord" (ini discord_presence, default on) and "Application ID" (ini
+  discord_client_id; default from CMake UJL_DISCORD_CLIENT_ID, the user's app 1571578704587526204, whose name is
+  what shows after "Playing"). No SDK: a worker thread opens \\.\pipe\discord-ipc-0..9 (Unix: discord-ipc-N
+  under XDG_RUNTIME_DIR/TMPDIR/TMP/TEMP//tmp, plus Flatpak/Snap subfolders), handshakes (op 0 {v:1, client_id},
+  waits for evt READY), answers pings, sends SET_ACTIVITY on change at most every 4 s (Discord allows ~5 per
+  20 s), retries every 10 s while Discord isn't running, and clears the activity on exit/off. iOS: stubbed.
+  Text from RAM, polled twice a second on the UI thread: overlay COMOD0.MEN "In the menus", COMOD8.* "Watching
+  the staff roll", a song overlay "Stage N: <who>" from the stage/submode pair 0x80078ae0/e4 (submodes 0 Lammy,
+  1 Lammy vs. Rammy, 2 Lammy & Rammy, 3 PaRappa, 4 PaRappa vs. Lammy, 5 Lammy & PaRappa: the same mapping as
+  arcade_stage1_play.c's slot table; restored Stage 1 modes add "(arcade)"), 0x80071dd0 1/2 = replay/demo. State:
+  "Paused" (host pause menu), else once the song clock 0x80078af8 runs and the scene hasn't ended (0x80071dd4 bit
+  3) the meter rating (0x80071dc0: 0-2 COOL, 3-6 GOOD, 7-10 BAD, 11+ AWFUL; versus both players, +10 for P2) and
+  "(Autoplay)". The elapsed timer restarts when the details line changes. While between overlays the last line is
+  kept. Scripted runs leave it off unless UJL_DISCORD=1; UJL_DISCORD_CLIENT_ID overrides the ID, UJL_DISCORD_LOG=1
+  logs each change. Checked on screen: menus -> Stage 1 Lammy -> GOOD -> COOL (Auto-COOL) -> Paused -> COOL, all
+  accepted by Discord. Submodes 1-5 on stages 2-7 not yet seen in a run. No images (the app has no art assets).
 - **UJL NOW! import in the setup wizard + arcade audio (user request 2026-11-15)**: the disc import step also accepts
   the UJL NOW! arcade CD image (CloneCD .img/.ccd) and ROM set. When imported, all of Lammy's guitar sounds and
   PaRappa's voice lines are replaced with the arcade versions (much higher quality than the PS1 samples). Needs:

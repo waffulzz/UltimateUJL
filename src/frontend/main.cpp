@@ -26,6 +26,7 @@
 #include "touch_pad.h"
 #include "pause_menu.h"
 #include "pause.h"
+#include "discord_rpc.h"
 
 extern "C" {
 #include "psx.h"
@@ -84,6 +85,26 @@ static bool pause_song_context() {
     if (n < 4 || (strcmp(ov + n - 4, ".SNG") && strcmp(ov + n - 4, ".CMP") && strcmp(ov + n - 4, ".COP"))) return false;
     unsigned stage = mem_r32(0x80078ae0);
     return stage >= 1 && stage <= 7 && mem_r32(0x80071dd0) != 2 && !(mem_r32(0x80071dd4) & 8);
+}
+
+// ---------------------------------------------------------------- Discord Rich Presence (discord_rpc.cpp)
+// ini discord_presence (on by default) and discord_client_id (the Discord application whose name shows as
+// "Playing ..."; default UJL_DISCORD_CLIENT_ID from the build). Scripted runs keep it off unless UJL_DISCORD=1,
+// and UJL_DISCORD_CLIENT_ID overrides the ID without saving it.
+#ifndef UJL_DISCORD_CLIENT_ID
+#define UJL_DISCORD_CLIENT_ID ""
+#endif
+static bool g_discord_on;
+static char g_discord_id[32];
+static void discord_apply() {
+    bool scripted = getenv("UJL_SCRIPT") && !getenv("UJL_DISCORD");
+    const char *env_id = getenv("UJL_DISCORD_CLIENT_ID");
+    discord_rpc_configure(g_discord_on && !scripted, env_id ? env_id : g_discord_id);
+}
+static void discord_load_settings() {
+    g_discord_on = ini_get("discord_presence", "1") != "0";
+    SDL_strlcpy(g_discord_id, ini_get("discord_client_id", UJL_DISCORD_CLIENT_ID).c_str(), sizeof g_discord_id);
+    discord_apply();
 }
 
 // ---------------------------------------------------------------- dev automation (UJL_SCRIPT)
@@ -969,6 +990,7 @@ int main(int argc, char **argv) {
     g_set.perf = ini_get("perf_details", "0") == "1";
     g_unlock_all = ini_get("unlock_all", "0") == "1";
     g_cd_fast_load = ini_get("fast_load", "0") == "1";
+    discord_load_settings();
     if (!g_script.empty()) {
         if (const char *a = getenv("UJL_SCRIPT_ASPECT")) g_set.aspect = std::max(0, std::min(5, atoi(a)));
         if (const char *r = getenv("UJL_SCRIPT_RENDERER")) g_set.renderer = atoi(r) != 0;
@@ -1228,6 +1250,7 @@ int main(int argc, char **argv) {
             if (last_ns) perf_worst_ms = std::max(perf_worst_ms, (float)((t - last_ns) / 1e6));
             last_ns = t;
         }
+        discord_rpc_frame(g_pause_menu.visible);
         if (now - fps_t0 >= 1000) {
             int vb = g_vblanks.load();
             emu_fps = (float)(vb - fps_vb0) * 1000.0f / (float)(now - fps_t0);
@@ -1483,6 +1506,33 @@ int main(int argc, char **argv) {
                     ImGui::EndTooltip();
                 }
             }
+#if !UJL_IOS
+            ImGui::SeparatorText("Discord");
+            {
+                if (ImGui::Checkbox("Show what I'm playing on Discord", &g_discord_on)) {
+                    ini_set("discord_presence", g_discord_on ? "1" : "0");
+                    discord_apply();
+                }
+                if (ImGui::BeginItemTooltip()) {
+                    ImGui::TextUnformatted("Your Discord status shows the menus, the stage and character you're playing,\n"
+                                           "versus or co-op, and your current rating. Needs the Discord desktop app.");
+                    ImGui::EndTooltip();
+                }
+                ImGui::BeginDisabled(!g_discord_on);
+                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+                if (ImGui::InputText("Application ID", g_discord_id, sizeof g_discord_id, ImGuiInputTextFlags_CharsDecimal)) {
+                    ini_set("discord_client_id", g_discord_id);
+                    discord_apply();
+                }
+                if (ImGui::BeginItemTooltip()) {
+                    ImGui::TextUnformatted("The ID of a Discord application (discord.com/developers/applications).\n"
+                                           "Its name is what Discord shows after \"Playing\".");
+                    ImGui::EndTooltip();
+                }
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("%s", discord_rpc_status().c_str());
+            }
+#endif
             ImGui::SeparatorText("Discs");
             {
                 auto base_name = [](const std::string &p) {
@@ -1743,6 +1793,7 @@ int main(int argc, char **argv) {
         }
     }
     memcard_flush(); // don't lose a save made in the last second
+    discord_rpc_shutdown();   // clear the activity now rather than when Discord notices the closed pipe
     // The game thread can't be unwound cleanly and keeps calling into SDL (audio stream, timers, semaphores), so
     // SDL_Quit() here would free those under it: a segfault on exit on Linux. Close only what the UI thread owns
     // (the game thread never touches the window or GL) and leave the process; exit releases the rest.

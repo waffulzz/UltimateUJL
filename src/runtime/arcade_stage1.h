@@ -46,6 +46,8 @@ bool arcade_stage1_faces(unsigned mode, uint8_t *out, size_t capacity, uint32_t 
 const uint8_t *arcade_stage1_bar_grid(unsigned mode, size_t *size);
 /* Stage 1's board command numbers -> the user's console PaRappa VAB sample numbers. */
 unsigned arcade_stage1_rap_voice(unsigned command);
+/* The restored Stage 1 mode being played (board slot 0..5), or -1. */
+int arcade_stage1_active_slot(void);
 bool arcade_stage1_unpack(const uint8_t *src, size_t packed_size, uint8_t *out, size_t size);
 #ifdef __cplusplus
 }
